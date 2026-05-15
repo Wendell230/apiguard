@@ -1,163 +1,194 @@
 """
-Treinamento do modelo Random Forest para detecção de DoS/DDoS.
+Treinamento do modelo Random Forest — pipeline do TCC 5G DoS/DDoS.
 
 Uso:
-    python ml/train.py --models-dir ml/models/ --version 1.0
+    python ml/train.py --models-dir ml/models/ --version 1.0 [--output-dir saida_DT]
 
-O script:
-1. Carrega X_preprocessed.npy e y.npy gerados pelo preprocess.py
-2. Treina RandomForestClassifier com GridSearchCV
-3. Avalia com cross-validation 5-fold
-4. Salva model_v{versao}.pkl + metadados JSON
-5. Imprime relatório completo
+Fluxo:
+1. Carrega X_preprocessed.npy e y.npy (gerados pelo preprocess.py)
+2. Treina RandomForest inicial (n_estimators=100, max_depth=5)
+3. Ajusta hiperparâmetros com GridSearchCV (cv=5)
+4. Avalia com validação cruzada 5-fold
+5. Gera gráficos: matriz de confusão, árvore, importância das variáveis
+6. Salva modelo como model_v{versao}.pkl + colunas_modelo.pkl + metadados JSON
 """
 import argparse
 import json
-import sys
+import os
 from datetime import datetime
 from pathlib import Path
 
 import joblib
+import matplotlib
+matplotlib.use('Agg')  # backend sem display — funciona em servidor
+import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+import seaborn as sns
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
+    ConfusionMatrixDisplay,
+    accuracy_score,
     classification_report,
     confusion_matrix,
     f1_score,
     precision_score,
     recall_score,
 )
-from sklearn.model_selection import GridSearchCV, StratifiedKFold, cross_validate, train_test_split
+from sklearn.model_selection import GridSearchCV, cross_val_score, train_test_split
+from sklearn.tree import export_text, plot_tree
 
 
 def load_data(models_dir: Path):
     X_path = models_dir / 'X_preprocessed.npy'
     y_path = models_dir / 'y.npy'
+    le_path = models_dir / 'label_encoder.pkl'
+    cols_path = models_dir / 'colunas_modelo.pkl'
 
-    if not X_path.exists() or not y_path.exists():
-        print('[train] ERRO: execute ml/preprocess.py antes de treinar.')
-        sys.exit(1)
+    if not X_path.exists():
+        raise FileNotFoundError('Execute ml/preprocess.py primeiro.')
 
     X = np.load(X_path)
     y = np.load(y_path)
-    print(f'[train] Dados carregados: {X.shape[0]:,} amostras, {X.shape[1]} features.')
-    return X, y
+    le = joblib.load(le_path) if le_path.exists() else None
+    colunas = joblib.load(cols_path) if cols_path.exists() else [f'f{i}' for i in range(X.shape[1])]
+
+    print(f'[train] {X.shape[0]:,} amostras | {X.shape[1]} features')
+    return X, y, le, colunas
 
 
-def grid_search(X_train, y_train) -> RandomForestClassifier:
-    """Otimização de hiperparâmetros com GridSearchCV."""
-    param_grid = {
-        'n_estimators': [100, 200],
-        'max_depth': [None, 20, 40],
-        'min_samples_split': [2, 5],
-        'class_weight': ['balanced', None],
-    }
-    base = RandomForestClassifier(random_state=42, n_jobs=-1)
-    cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
-
-    print('[train] Iniciando GridSearchCV (pode demorar alguns minutos)...')
-    gs = GridSearchCV(
-        base, param_grid, cv=cv, scoring='f1_weighted',
-        n_jobs=-1, verbose=1, refit=True,
-    )
-    gs.fit(X_train, y_train)
-    print(f'[train] Melhores parâmetros: {gs.best_params_}')
-    print(f'[train] Melhor F1 (CV): {gs.best_score_:.4f}')
-    return gs.best_estimator_
-
-
-def cross_validate_model(model, X, y) -> dict:
-    """Validação cruzada estratificada 5-fold."""
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    results = cross_validate(
-        model, X, y, cv=cv,
-        scoring=['accuracy', 'f1_weighted', 'precision_weighted', 'recall_weighted'],
-        return_train_score=False,
-    )
-    return {
-        'accuracy': float(results['test_accuracy'].mean()),
-        'f1': float(results['test_f1_weighted'].mean()),
-        'precision': float(results['test_precision_weighted'].mean()),
-        'recall': float(results['test_recall_weighted'].mean()),
-        'accuracy_std': float(results['test_accuracy'].std()),
-    }
-
-
-def train(models_dir: str, version: str, test_size: float = 0.2):
+def train(models_dir: str, version: str, output_dir: str, test_size: float = 0.3):
     models_dir = Path(models_dir)
-    X, y = load_data(models_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Carrega metadados do pré-processamento
-    meta_path = models_dir / 'preprocessing_metadata.json'
-    classes = None
-    if meta_path.exists():
-        with open(meta_path) as f:
-            pre_meta = json.load(f)
-        classes = pre_meta.get('classes', [])
+    X, y, le, colunas = load_data(models_dir)
+    classes = le.classes_.tolist() if le else list(map(str, np.unique(y)))
 
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, stratify=y, random_state=42
+        X, y, test_size=test_size, random_state=42
     )
     print(f'[train] Treino: {len(X_train):,} | Teste: {len(X_test):,}')
 
-    model = grid_search(X_train, y_train)
+    # --- Modelo inicial ---
+    print('\n[train] Treinando modelo inicial (n_estimators=100, max_depth=5)...')
+    modelo_inicial = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
+    modelo_inicial.fit(X_train, y_train)
+    y_pred_inicial = modelo_inicial.predict(X_test)
 
-    # Avaliação no conjunto de teste
-    y_pred = model.predict(X_test)
-    print('\n[train] === Relatório de Classificação (conjunto de teste) ===')
+    print('\n=== Avaliação Inicial ===')
+    print('Acurácia:', accuracy_score(y_test, y_pred_inicial))
+    print(classification_report(y_test, y_pred_inicial, target_names=classes))
+
+    # Validação cruzada do modelo inicial
+    scores_cv = cross_val_score(modelo_inicial, X, y, cv=5, scoring='accuracy')
+    print('=== Validação Cruzada (modelo inicial) ===')
+    print('Acurácias por fold:', scores_cv)
+    print('Acurácia média:', np.mean(scores_cv))
+
+    # Matriz de confusão — modelo inicial
+    cm = confusion_matrix(y_test, y_pred_inicial)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=classes)
+    disp.plot()
+    plt.title('Matriz de Confusão — Modelo Inicial')
+    plt.savefig(output_dir / 'matriz_confusao_inicial.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f'[train] Gráfico salvo: {output_dir}/matriz_confusao_inicial.png')
+
+    # --- GridSearchCV ---
+    print('\n=== Ajuste de Hiperparâmetros (GridSearchCV) ===')
+    param_grid = {
+        'n_estimators': [50, 100, 200],
+        'max_depth': [3, 5, 8, 12],
+        'min_samples_split': [2, 4, 8],
+        'min_samples_leaf': [1, 2, 4],
+    }
+    gs = GridSearchCV(
+        RandomForestClassifier(random_state=42),
+        param_grid, cv=5, scoring='accuracy', n_jobs=-1, verbose=1,
+    )
+    gs.fit(X, y)
+    print('Melhores parâmetros:', gs.best_params_)
+    print('Melhor acurácia (CV):', gs.best_score_)
+
+    modelo_otimizado = gs.best_estimator_
+
+    # --- Avaliação do modelo otimizado no teste ---
+    y_pred = modelo_otimizado.predict(X_test)
+    print('\n=== Avaliação Modelo Otimizado ===')
+    print('Acurácia treino:', accuracy_score(y_train, modelo_otimizado.predict(X_train)))
+    print('Acurácia teste:', accuracy_score(y_test, y_pred))
     print(classification_report(y_test, y_pred, target_names=classes))
 
-    # Validação cruzada
-    print('[train] Executando cross-validation 5-fold...')
-    cv_results = cross_validate_model(model, X, y)
-    print(f'[train] CV Acurácia : {cv_results["accuracy"]:.4f} ± {cv_results["accuracy_std"]:.4f}')
-    print(f'[train] CV F1        : {cv_results["f1"]:.4f}')
-    print(f'[train] CV Precisão  : {cv_results["precision"]:.4f}')
-    print(f'[train] CV Recall    : {cv_results["recall"]:.4f}')
+    # --- Visualização da primeira árvore ---
+    estimator = modelo_otimizado.estimators_[0]
+    plt.figure(figsize=(20, 10))
+    plot_tree(estimator, feature_names=colunas, class_names=classes, filled=True, max_depth=3)
+    plt.title('Primeira Árvore do Random Forest Otimizado')
+    plt.savefig(output_dir / 'primeira_arvore_rf_otimizada.png', dpi=300, bbox_inches='tight')
+    plt.close()
 
-    # Importância das features
-    if classes:
-        importances = model.feature_importances_
-        sorted_idx = np.argsort(importances)[::-1][:10]
-        print('\n[train] Top 10 features mais importantes:')
-        feature_names = pre_meta.get('features', [f'f{i}' for i in range(X.shape[1])])
-        for rank, idx in enumerate(sorted_idx, 1):
-            name = feature_names[idx] if idx < len(feature_names) else f'f{idx}'
-            print(f'  {rank:2d}. {name}: {importances[idx]:.4f}')
+    # Regras da primeira árvore
+    regras = export_text(estimator, feature_names=colunas)
+    with open(output_dir / 'regras_primeira_arvore_rf.txt', 'w') as f:
+        f.write(regras)
+    print(f'[train] Regras salvas: {output_dir}/regras_primeira_arvore_rf.txt')
 
-    # Salva modelo
+    # --- Importância das variáveis ---
+    importancias = modelo_otimizado.feature_importances_
+    importancia_df = pd.DataFrame({'Variável': colunas, 'Importância': importancias})
+    importancia_df = importancia_df[importancia_df['Importância'] > 0].sort_values('Importância', ascending=False)
+
+    print('\n=== Importância das Variáveis ===')
+    print(importancia_df.to_string(index=False))
+
+    plt.figure(figsize=(10, max(6, 0.3 * len(importancia_df))))
+    sns.barplot(data=importancia_df, x='Importância', y='Variável', palette='viridis')
+    plt.title('Importância das Variáveis no Random Forest')
+    plt.xlabel('Importância')
+    plt.ylabel('Variável')
+    plt.tight_layout()
+    plt.savefig(output_dir / 'importancia_variaveis_rf.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+    # --- Salva modelo e artefatos ---
     model_filename = f'model_v{version}.pkl'
     model_path = models_dir / model_filename
-    joblib.dump(model, model_path)
-    print(f'\n[train] Modelo salvo: {model_path}')
+    joblib.dump(modelo_otimizado, model_path)
 
-    # Salva metadados
+    # Garante que colunas_modelo.pkl está na pasta de modelos
+    joblib.dump(colunas, models_dir / 'colunas_modelo.pkl')
+
     metadata = {
         'version': version,
         'trained_at': datetime.now().isoformat(),
         'n_train': int(len(X_train)),
         'n_test': int(len(X_test)),
-        'test_accuracy': float((y_pred == y_test).mean()),
-        'test_f1': float(f1_score(y_test, y_pred, average='weighted')),
+        'test_accuracy': float(accuracy_score(y_test, y_pred)),
+        'test_f1': float(f1_score(y_test, y_pred, average='weighted', zero_division=0)),
         'test_precision': float(precision_score(y_test, y_pred, average='weighted', zero_division=0)),
         'test_recall': float(recall_score(y_test, y_pred, average='weighted', zero_division=0)),
-        'cv': cv_results,
-        'best_params': model.get_params(),
-        'classes': classes or [],
+        'cv_accuracy_mean': float(np.mean(scores_cv)),
+        'best_params': gs.best_params_,
+        'classes': classes,
         'model_file': str(model_path),
+        'output_dir': str(output_dir),
     }
-    meta_out = models_dir / f'model_v{version}_metadata.json'
-    with open(meta_out, 'w') as f:
+    meta_path = models_dir / f'model_v{version}_metadata.json'
+    with open(meta_path, 'w') as f:
         json.dump(metadata, f, indent=2, ensure_ascii=False, default=str)
-    print(f'[train] Metadados salvos: {meta_out}')
 
+    print(f'\n[train] Modelo salvo: {model_path}')
+    print(f'[train] Metadados: {meta_path}')
+    print(f'[train] Gráficos em: {output_dir}/')
     return metadata
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Treina o modelo Random Forest.')
-    parser.add_argument('--models-dir', default='ml/models/', help='Diretório dos artefatos')
-    parser.add_argument('--version', default='1.0', help='Versão do modelo (ex: 1.0)')
-    parser.add_argument('--test-size', type=float, default=0.2, help='Proporção do conjunto de teste')
+    parser.add_argument('--models-dir', default='ml/models/', help='Diretório dos artefatos .npy')
+    parser.add_argument('--version', default='1.0', help='Versão do modelo')
+    parser.add_argument('--output-dir', default='saida_DT', help='Diretório para gráficos')
+    parser.add_argument('--test-size', type=float, default=0.3, help='Proporção do conjunto de teste')
     args = parser.parse_args()
-    train(args.models_dir, args.version, args.test_size)
+    train(args.models_dir, args.version, args.output_dir, args.test_size)

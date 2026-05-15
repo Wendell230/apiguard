@@ -6,39 +6,21 @@ from rest_framework.test import APITestCase
 from authentication.models import User
 from detection.models import TrafficLog
 
-
-# Payload válido para o endpoint /api/predict/
+# Payload mínimo — todos os campos têm default=0.0 no serializer
 VALID_PREDICT_PAYLOAD = {
     'source_ip': '192.168.1.100',
     'protocol': 'TCP',
-    'packet_count': 1000,
-    'duration': 5.0,
-    'flow_duration': 5000000.0,
-    'total_fwd_packets': 500.0,
-    'total_bwd_packets': 500.0,
-    'total_length_fwd_packets': 50000.0,
-    'total_length_bwd_packets': 50000.0,
-    'fwd_packet_length_max': 1514.0,
-    'fwd_packet_length_min': 64.0,
-    'fwd_packet_length_mean': 100.0,
-    'fwd_packet_length_std': 20.0,
-    'bwd_packet_length_max': 1514.0,
-    'bwd_packet_length_min': 64.0,
-    'bwd_packet_length_mean': 100.0,
-    'bwd_packet_length_std': 20.0,
-    'flow_bytes_s': 10000.0,
-    'flow_packets_s': 200.0,
-    'flow_iat_mean': 5000.0,
-    'flow_iat_std': 1000.0,
-    'flow_iat_max': 10000.0,
-    'flow_iat_min': 100.0,
-    'syn_flag_count': 1.0,
-    'rst_flag_count': 0.0,
-    'psh_flag_count': 100.0,
-    'ack_flag_count': 499.0,
-    'avg_packet_size': 100.0,
-    'avg_fwd_segment_size': 100.0,
-    'avg_bwd_segment_size': 100.0,
+    'packet_count': 100,
+    'duration': 1.0,
+    # Algumas features com valores reais
+    'flow_duration': 500000.0,
+    'tot_fwd_pkts': 50.0,
+    'tot_bwd_pkts': 30.0,
+    'syn_flag_cnt': 1.0,
+    'ack_flag_cnt': 78.0,
+    'flow_byts_s': 8000.0,
+    'flow_pkts_s': 160.0,
+    # Demais fields assumem default 0.0
 }
 
 
@@ -56,19 +38,17 @@ class DetectionTests(APITestCase):
             name='Admin',
             role=User.Role.ADMIN,
         )
-        self.predict_url = reverse('predict')
-        self.dashboard_url = reverse('dashboard')
-        self.model_list_url = reverse('model-list')
+        self.predict_url     = reverse('predict')
+        self.dashboard_url   = reverse('dashboard')
+        self.model_list_url  = reverse('model-list')
         self.model_update_url = reverse('model-update')
 
     def _auth(self, user):
-        """Autentica e configura o client para o usuário dado."""
+        pwd = 'adminsenha123' if user.role == User.Role.ADMIN else 'senha123'
         resp = self.client.post(reverse('auth-login'), {
-            'email': user.email,
-            'password': 'senha123' if user.role != User.Role.ADMIN else 'adminsenha123',
+            'email': user.email, 'password': pwd,
         }, format='json')
-        token = resp.data['access']
-        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {resp.data["access"]}')
 
     def test_predict_sem_autenticacao(self):
         resp = self.client.post(self.predict_url, VALID_PREDICT_PAYLOAD, format='json')
@@ -99,7 +79,6 @@ class DetectionTests(APITestCase):
 
     def test_logs_lista_paginada(self):
         self._auth(self.analyst)
-        # Cria predições para popular os logs
         for _ in range(3):
             self.client.post(self.predict_url, VALID_PREDICT_PAYLOAD, format='json')
         resp = self.client.get(reverse('traffic-logs-list'))

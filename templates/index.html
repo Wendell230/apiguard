@@ -1,0 +1,1084 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>APIGuard — Detecção DoS/DDoS</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --sidebar-bg: #0f172a;
+      --sidebar-accent: #38bdf8;
+      --attack-color: #ef4444;
+      --benign-color: #22c55e;
+      --card-shadow: 0 2px 12px rgba(0,0,0,.08);
+    }
+    body { background: #f1f5f9; font-family: 'Segoe UI', sans-serif; }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      width: 240px; min-height: 100vh; background: var(--sidebar-bg);
+      position: fixed; top: 0; left: 0; z-index: 100;
+      display: flex; flex-direction: column;
+    }
+    #sidebar .brand {
+      padding: 24px 20px 12px;
+      color: var(--sidebar-accent);
+      font-weight: 700; font-size: 1.3rem; letter-spacing: .5px;
+    }
+    #sidebar .brand small { display: block; color: #94a3b8; font-size: .7rem; font-weight: 400; }
+    #sidebar nav a {
+      display: flex; align-items: center; gap: 10px;
+      padding: 11px 20px; color: #94a3b8; text-decoration: none;
+      font-size: .9rem; border-left: 3px solid transparent; transition: all .15s;
+    }
+    #sidebar nav a:hover, #sidebar nav a.active {
+      color: #fff; background: rgba(255,255,255,.06); border-left-color: var(--sidebar-accent);
+    }
+    #sidebar nav a i { font-size: 1.1rem; }
+    #sidebar .user-info {
+      margin-top: auto; padding: 16px 20px;
+      border-top: 1px solid #1e293b; color: #64748b; font-size: .8rem;
+    }
+    #sidebar .user-info strong { display: block; color: #cbd5e1; }
+
+    /* ── Main ── */
+    #main { margin-left: 240px; padding: 28px 32px; min-height: 100vh; }
+    .page-title { font-size: 1.4rem; font-weight: 700; color: #0f172a; margin-bottom: 6px; }
+    .page-subtitle { color: #64748b; font-size: .88rem; margin-bottom: 24px; }
+
+    /* ── Cards de métricas ── */
+    .metric-card {
+      background: #fff; border-radius: 12px; padding: 22px 24px;
+      box-shadow: var(--card-shadow); border: 1px solid #e2e8f0;
+    }
+    .metric-card .label { font-size: .78rem; color: #94a3b8; text-transform: uppercase; letter-spacing: .6px; }
+    .metric-card .value { font-size: 2rem; font-weight: 700; color: #0f172a; line-height: 1.1; margin: 4px 0; }
+    .metric-card .icon { font-size: 1.6rem; opacity: .18; }
+    .metric-card.attack  { border-left: 4px solid var(--attack-color); }
+    .metric-card.benign  { border-left: 4px solid var(--benign-color); }
+    .metric-card.latency { border-left: 4px solid #f59e0b; }
+    .metric-card.model   { border-left: 4px solid var(--sidebar-accent); }
+
+    /* ── Resultado de predição ── */
+    #predict-result { display: none; }
+    .result-card {
+      border-radius: 14px; padding: 28px; color: #fff;
+      display: flex; align-items: center; gap: 20px;
+    }
+    .result-card.attack { background: linear-gradient(135deg, #ef4444, #b91c1c); }
+    .result-card.benign { background: linear-gradient(135deg, #22c55e, #15803d); }
+    .result-card .result-icon { font-size: 3rem; }
+    .result-card .result-label { font-size: .85rem; opacity: .85; }
+    .result-card .result-value { font-size: 2rem; font-weight: 700; }
+    .result-card .badge-type {
+      display: inline-block; background: rgba(255,255,255,.25);
+      border-radius: 6px; padding: 3px 10px; font-size: .8rem; margin-top: 4px;
+    }
+
+    /* ── Logs table ── */
+    .badge-attack { background: #fef2f2; color: #b91c1c; border: 1px solid #fca5a5; }
+    .badge-benign { background: #f0fdf4; color: #15803d; border: 1px solid #86efac; }
+    .badge-mock   { background: #fef9c3; color: #92400e; border: 1px solid #fde68a; }
+
+    /* ── Tabs ── */
+    .section { display: none; }
+    .section.active { display: block; }
+
+    /* ── Login overlay ── */
+    #login-overlay {
+      position: fixed; inset: 0; background: #0f172a;
+      display: flex; align-items: center; justify-content: center; z-index: 999;
+    }
+    .login-box {
+      background: #fff; border-radius: 16px; padding: 40px 44px;
+      width: 100%; max-width: 400px; box-shadow: 0 20px 60px rgba(0,0,0,.4);
+    }
+    .login-box h1 { font-size: 1.6rem; font-weight: 800; color: #0f172a; }
+    .login-box p  { color: #64748b; font-size: .88rem; }
+    #login-error  { display: none; }
+
+    /* ── JSON editor ── */
+    #json-input { font-family: 'Consolas', monospace; font-size: .78rem; min-height: 280px; }
+
+    /* ── Progress bar ── */
+    .prob-bar { height: 8px; border-radius: 4px; background: #e2e8f0; margin-top: 6px; }
+    .prob-fill { height: 100%; border-radius: 4px; transition: width .4s ease; }
+
+    /* ── Charts ── */
+    .chart-card {
+      background: #fff; border-radius: 12px; padding: 20px;
+      box-shadow: var(--card-shadow); border: 1px solid #e2e8f0;
+    }
+    .chart-card h6 { font-size: .82rem; color: #64748b; text-transform: uppercase; letter-spacing: .5px; }
+
+    /* ── Misc ── */
+    .spinner-border-sm { width: 1rem; height: 1rem; }
+    #toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 2000; }
+    .toast-msg {
+      background: #1e293b; color: #e2e8f0; padding: 12px 18px;
+      border-radius: 10px; margin-top: 8px; font-size: .85rem;
+      animation: slideIn .2s ease; box-shadow: 0 4px 16px rgba(0,0,0,.3);
+    }
+    @keyframes slideIn { from { transform: translateX(60px); opacity: 0; } to { transform: none; opacity: 1; } }
+  </style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════ LOGIN ═══════════════════════════════════ -->
+<div id="login-overlay">
+  <div class="login-box">
+    <div class="mb-3 text-center">
+      <span style="font-size:2.5rem">🛡️</span>
+    </div>
+    <h1 class="text-center mb-1">APIGuard</h1>
+    <p class="text-center mb-4">Detecção de DoS/DDoS — 5G &amp; IoT</p>
+    <div id="login-error" class="alert alert-danger py-2 small mb-3"></div>
+    <form id="login-form">
+      <div class="mb-3">
+        <label class="form-label small fw-semibold">E-mail</label>
+        <input type="email" class="form-control" id="login-email" placeholder="admin@apiguard.com" required />
+      </div>
+      <div class="mb-4">
+        <label class="form-label small fw-semibold">Senha</label>
+        <input type="password" class="form-control" id="login-password" placeholder="••••••••" required />
+      </div>
+      <button type="submit" class="btn btn-primary w-100 fw-semibold" id="login-btn">
+        Entrar
+      </button>
+    </form>
+    <p class="text-center text-muted mt-4" style="font-size:.75rem">
+      TCC — Detecção de Ataques em Redes 5G e IoT com Random Forest
+    </p>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════ APP ════════════════════════════════════ -->
+<div id="app" style="display:none">
+
+  <!-- Sidebar -->
+  <aside id="sidebar">
+    <div class="brand">
+      🛡️ APIGuard
+      <small>Detecção DoS/DDoS · 5G &amp; IoT</small>
+    </div>
+    <nav>
+      <a href="#" class="nav-link active" data-section="dashboard">
+        <i class="bi bi-speedometer2"></i> Dashboard
+      </a>
+      <a href="#" class="nav-link" data-section="predict">
+        <i class="bi bi-cpu"></i> Analisar Tráfego
+      </a>
+      <a href="#" class="nav-link" data-section="logs">
+        <i class="bi bi-journal-text"></i> Histórico de Logs
+      </a>
+      <a href="#" class="nav-link" data-section="models">
+        <i class="bi bi-box-seam"></i> Modelos ML
+      </a>
+    </nav>
+    <div class="user-info">
+      <strong id="sidebar-username">—</strong>
+      <span id="sidebar-role" class="badge bg-secondary mt-1" style="font-size:.65rem"></span>
+      <button class="btn btn-sm btn-outline-secondary mt-2 w-100" onclick="logout()">
+        <i class="bi bi-box-arrow-left me-1"></i>Sair
+      </button>
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <main id="main">
+
+    <!-- ── DASHBOARD ── -->
+    <section class="section active" id="section-dashboard">
+      <div class="page-title"><i class="bi bi-speedometer2 me-2"></i>Dashboard</div>
+      <div class="page-subtitle">Visão geral do sistema de detecção em tempo real</div>
+
+      <!-- Métricas -->
+      <div class="row g-3 mb-4">
+        <div class="col-md-3">
+          <div class="metric-card">
+            <div class="d-flex justify-content-between align-items-start">
+              <div>
+                <div class="label">Análises hoje</div>
+                <div class="value" id="dash-total">—</div>
+                <div class="text-muted" style="font-size:.78rem">fluxos classificados</div>
+              </div>
+              <i class="bi bi-activity icon text-primary"></i>
+            </div>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <div class="metric-card attack">
+            <div class="d-flex justify-content-between align-items-start">
+              <div>
+                <div class="label">Ataques hoje</div>
+                <div class="value text-danger" id="dash-attacks">—</div>
+                <div class="text-muted" style="font-size:.78rem">fluxos maliciosos</div>
+              </div>
+              <i class="bi bi-shield-exclamation icon text-danger"></i>
+            </div>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <div class="metric-card benign">
+            <div class="d-flex justify-content-between align-items-start">
+              <div>
+                <div class="label">% Benigno</div>
+                <div class="value text-success" id="dash-pct">—</div>
+                <div class="text-muted" style="font-size:.78rem">tráfego legítimo</div>
+              </div>
+              <i class="bi bi-shield-check icon text-success"></i>
+            </div>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <div class="metric-card latency">
+            <div class="d-flex justify-content-between align-items-start">
+              <div>
+                <div class="label">Latência média</div>
+                <div class="value" id="dash-latency" style="color:#f59e0b">—</div>
+                <div class="text-muted" style="font-size:.78rem">milissegundos</div>
+              </div>
+              <i class="bi bi-lightning-charge icon" style="color:#f59e0b"></i>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Gráficos -->
+      <div class="row g-3 mb-4">
+        <div class="col-md-4">
+          <div class="chart-card h-100">
+            <h6 class="mb-3"><i class="bi bi-pie-chart me-1"></i>Distribuição hoje</h6>
+            <canvas id="chart-donut" height="200"></canvas>
+          </div>
+        </div>
+        <div class="col-md-8">
+          <div class="chart-card h-100">
+            <h6 class="mb-3"><i class="bi bi-bar-chart me-1"></i>Principais ataques (7 dias)</h6>
+            <canvas id="chart-attacks" height="160"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modelo ativo -->
+      <div class="chart-card mb-4">
+        <div class="d-flex align-items-center gap-3">
+          <i class="bi bi-box-seam text-info fs-4"></i>
+          <div>
+            <div class="fw-semibold" id="dash-model-name">Carregando...</div>
+            <div class="text-muted small" id="dash-model-info"></div>
+          </div>
+          <span id="dash-mock-badge" class="badge ms-auto" style="display:none"></span>
+        </div>
+      </div>
+
+      <!-- Logs recentes -->
+      <div class="chart-card">
+        <h6 class="mb-3"><i class="bi bi-clock-history me-1"></i>Logs recentes</h6>
+        <div class="table-responsive">
+          <table class="table table-sm table-hover align-middle mb-0">
+            <thead class="table-light">
+              <tr>
+                <th>Timestamp</th>
+                <th>IP Origem</th>
+                <th>Predição</th>
+                <th>Tipo de Ataque</th>
+                <th class="text-end">Prob.</th>
+                <th class="text-end">Latência</th>
+              </tr>
+            </thead>
+            <tbody id="dash-logs-body">
+              <tr><td colspan="6" class="text-center text-muted py-3">Carregando...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── PREDICT ── -->
+    <section class="section" id="section-predict">
+      <div class="page-title"><i class="bi bi-cpu me-2"></i>Analisar Tráfego</div>
+      <div class="page-subtitle">Classifique um fluxo de rede com o modelo Random Forest</div>
+
+      <div class="row g-4">
+        <div class="col-lg-6">
+          <div class="chart-card">
+            <h6 class="mb-3"><i class="bi bi-collection me-1"></i>Exemplos pré-definidos</h6>
+            <div class="d-flex flex-wrap gap-2 mb-4">
+              <button class="btn btn-sm btn-outline-success" onclick="loadExample('BENIGN')">
+                <i class="bi bi-shield-check me-1"></i>BENIGNO
+              </button>
+              <button class="btn btn-sm btn-outline-danger" onclick="loadExample('SYN_FLOOD')">
+                <i class="bi bi-lightning me-1"></i>SYN Flood
+              </button>
+              <button class="btn btn-sm btn-outline-danger" onclick="loadExample('UDP_FLOOD')">
+                <i class="bi bi-broadcast me-1"></i>UDP Flood
+              </button>
+              <button class="btn btn-sm btn-outline-danger" onclick="loadExample('HTTP_FLOOD')">
+                <i class="bi bi-globe me-1"></i>HTTP Flood
+              </button>
+            </div>
+
+            <h6 class="mb-2"><i class="bi bi-info-circle me-1"></i>Metadados</h6>
+            <div class="row g-2 mb-3">
+              <div class="col-6">
+                <label class="form-label small">IP de Origem</label>
+                <input class="form-control form-control-sm" id="p-source_ip" placeholder="192.168.1.1" />
+              </div>
+              <div class="col-3">
+                <label class="form-label small">Protocolo</label>
+                <input class="form-control form-control-sm" id="p-protocol" placeholder="TCP" />
+              </div>
+              <div class="col-3">
+                <label class="form-label small">Qtd Pacotes</label>
+                <input class="form-control form-control-sm" id="p-packet_count" type="number" placeholder="0" />
+              </div>
+            </div>
+
+            <h6 class="mb-2"><i class="bi bi-code-square me-1"></i>Features (JSON)</h6>
+            <textarea class="form-control" id="json-input" spellcheck="false" placeholder='{"flow_duration": 1234567, "syn_flag_cnt": 1, ...}'></textarea>
+            <div class="d-flex justify-content-between align-items-center mt-2">
+              <small class="text-muted">76 features do dataset 5G DoS/DDoS</small>
+              <button class="btn btn-sm btn-outline-secondary" onclick="formatJson()">
+                <i class="bi bi-braces"></i> Formatar
+              </button>
+            </div>
+
+            <button class="btn btn-primary w-100 mt-3 fw-semibold" id="predict-btn" onclick="runPredict()">
+              <i class="bi bi-play-fill me-1"></i>Analisar Tráfego
+            </button>
+          </div>
+        </div>
+
+        <div class="col-lg-6">
+          <!-- Resultado -->
+          <div id="predict-result">
+            <div id="result-card" class="result-card mb-3">
+              <div class="result-icon" id="result-icon"></div>
+              <div>
+                <div class="result-label">Classificação</div>
+                <div class="result-value" id="result-pred"></div>
+                <span class="badge-type" id="result-type"></span>
+              </div>
+              <div class="ms-auto text-end">
+                <div class="result-label">Confiança</div>
+                <div style="font-size:1.6rem;font-weight:700" id="result-prob"></div>
+              </div>
+            </div>
+
+            <div class="chart-card mb-3">
+              <div class="row text-center">
+                <div class="col-4 border-end">
+                  <div class="text-muted small">Latência</div>
+                  <div class="fw-bold" id="result-latency"></div>
+                </div>
+                <div class="col-4 border-end">
+                  <div class="text-muted small">ID do Log</div>
+                  <div class="fw-bold" id="result-log-id"></div>
+                </div>
+                <div class="col-4">
+                  <div class="text-muted small">Modelo</div>
+                  <div class="fw-bold" id="result-model-type"></div>
+                </div>
+              </div>
+              <div class="prob-bar mt-3">
+                <div class="prob-fill" id="prob-fill" style="background:#22c55e"></div>
+              </div>
+              <div class="d-flex justify-content-between mt-1">
+                <small class="text-muted">0%</small>
+                <small class="text-muted fw-semibold" id="prob-label"></small>
+                <small class="text-muted">100%</small>
+              </div>
+            </div>
+
+            <div class="chart-card">
+              <h6 class="mb-2"><i class="bi bi-info-circle me-1"></i>Interpretação</h6>
+              <p class="small text-muted mb-0" id="result-interpretation"></p>
+            </div>
+          </div>
+
+          <!-- Estado inicial -->
+          <div id="predict-empty" class="chart-card text-center py-5 text-muted">
+            <i class="bi bi-cpu" style="font-size:3rem;opacity:.2"></i>
+            <p class="mt-3 mb-0">Selecione um exemplo ou preencha as features e clique em <strong>Analisar</strong></p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── LOGS ── -->
+    <section class="section" id="section-logs">
+      <div class="page-title"><i class="bi bi-journal-text me-2"></i>Histórico de Logs</div>
+      <div class="page-subtitle">Todos os fluxos analisados pelo sistema</div>
+
+      <!-- Filtros -->
+      <div class="chart-card mb-3">
+        <div class="row g-2 align-items-end">
+          <div class="col-md-3">
+            <label class="form-label small">IP de Origem</label>
+            <input class="form-control form-control-sm" id="filter-ip" placeholder="Ex: 10.0.0.1" />
+          </div>
+          <div class="col-md-2">
+            <label class="form-label small">Predição</label>
+            <select class="form-select form-select-sm" id="filter-pred">
+              <option value="">Todas</option>
+              <option value="BENIGN">Benigno</option>
+              <option value="ATTACK">Ataque</option>
+            </select>
+          </div>
+          <div class="col-md-2">
+            <label class="form-label small">Data Início</label>
+            <input type="date" class="form-control form-control-sm" id="filter-from" />
+          </div>
+          <div class="col-md-2">
+            <label class="form-label small">Data Fim</label>
+            <input type="date" class="form-control form-control-sm" id="filter-to" />
+          </div>
+          <div class="col-md-3">
+            <button class="btn btn-sm btn-primary me-2" onclick="loadLogs(1)">
+              <i class="bi bi-search me-1"></i>Filtrar
+            </button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="clearFilters()">
+              Limpar
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="chart-card">
+        <div class="table-responsive">
+          <table class="table table-sm table-hover align-middle mb-0">
+            <thead class="table-light">
+              <tr>
+                <th>#</th>
+                <th>Timestamp</th>
+                <th>IP Origem</th>
+                <th>Protocolo</th>
+                <th>Predição</th>
+                <th>Tipo de Ataque</th>
+                <th class="text-end">Prob.</th>
+                <th class="text-end">Latência (ms)</th>
+              </tr>
+            </thead>
+            <tbody id="logs-body">
+              <tr><td colspan="8" class="text-center text-muted py-3">Carregando...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="d-flex justify-content-between align-items-center mt-3">
+          <small class="text-muted" id="logs-count"></small>
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-outline-secondary" id="btn-prev" onclick="loadLogs(currentPage-1)" disabled>
+              <i class="bi bi-chevron-left"></i>
+            </button>
+            <span class="btn btn-sm btn-light disabled" id="page-info">1</span>
+            <button class="btn btn-sm btn-outline-secondary" id="btn-next" onclick="loadLogs(currentPage+1)" disabled>
+              <i class="bi bi-chevron-right"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── MODELS ── -->
+    <section class="section" id="section-models">
+      <div class="page-title"><i class="bi bi-box-seam me-2"></i>Modelos ML</div>
+      <div class="page-subtitle">Gerencie as versões do Random Forest</div>
+
+      <!-- Upload (admin only) -->
+      <div class="chart-card mb-4" id="upload-card">
+        <h6 class="mb-3"><i class="bi bi-upload me-1"></i>Publicar novo modelo <span class="badge bg-danger ms-1" style="font-size:.6rem">ADMIN</span></h6>
+        <div class="row g-2">
+          <div class="col-md-3">
+            <input class="form-control form-control-sm" id="m-name" placeholder="Nome (ex: RF 5G-DDoS)" />
+          </div>
+          <div class="col-md-2">
+            <input class="form-control form-control-sm" id="m-version" placeholder="Versão (ex: 1.0)" />
+          </div>
+          <div class="col-md-2">
+            <input class="form-control form-control-sm" id="m-accuracy" type="number" step="0.0001" min="0" max="1" placeholder="Acurácia" />
+          </div>
+          <div class="col-md-5">
+            <input class="form-control form-control-sm" id="m-description" placeholder="Descrição" />
+          </div>
+          <div class="col-md-6">
+            <label class="form-label small">Arquivo .pkl</label>
+            <input class="form-control form-control-sm" type="file" id="m-file" accept=".pkl" />
+          </div>
+          <div class="col-md-6 d-flex align-items-end">
+            <button class="btn btn-sm btn-success w-100" onclick="uploadModel()">
+              <i class="bi bi-cloud-upload me-1"></i>Publicar Modelo
+            </button>
+          </div>
+        </div>
+        <div id="upload-error" class="alert alert-danger py-2 small mt-2" style="display:none"></div>
+      </div>
+
+      <!-- Lista de modelos -->
+      <div class="chart-card">
+        <h6 class="mb-3"><i class="bi bi-list-ul me-1"></i>Versões disponíveis</h6>
+        <div id="models-list">
+          <div class="text-center text-muted py-3">Carregando...</div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div id="toast-container"></div>
+
+<script>
+// ════════════════════════════════════════
+//  Estado global
+// ════════════════════════════════════════
+const API = '';  // mesmo origin
+let accessToken  = localStorage.getItem('ag_access')  || '';
+let refreshToken = localStorage.getItem('ag_refresh') || '';
+let currentUser  = null;
+let currentPage  = 1;
+let donutChart   = null;
+let attackChart  = null;
+
+// ════════════════════════════════════════
+//  Utilitários HTTP
+// ════════════════════════════════════════
+async function apiFetch(path, opts = {}) {
+  opts.headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+  if (accessToken) opts.headers['Authorization'] = `Bearer ${accessToken}`;
+  let res = await fetch(API + path, opts);
+
+  if (res.status === 401 && refreshToken) {
+    // Tenta renovar o token
+    const r = await fetch(API + '/api/auth/refresh/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh: refreshToken }),
+    });
+    if (r.ok) {
+      const d = await r.json();
+      accessToken = d.access;
+      localStorage.setItem('ag_access', accessToken);
+      opts.headers['Authorization'] = `Bearer ${accessToken}`;
+      res = await fetch(API + path, opts);
+    } else {
+      logout();
+      return null;
+    }
+  }
+  return res;
+}
+
+// ════════════════════════════════════════
+//  Auth
+// ════════════════════════════════════════
+document.getElementById('login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('login-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Entrando...';
+
+  const res = await fetch(API + '/api/auth/login/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email:    document.getElementById('login-email').value,
+      password: document.getElementById('login-password').value,
+    }),
+  });
+  const data = await res.json();
+
+  if (res.ok) {
+    accessToken  = data.access;
+    refreshToken = data.refresh;
+    currentUser  = data.user;
+    localStorage.setItem('ag_access',  accessToken);
+    localStorage.setItem('ag_refresh', refreshToken);
+    showApp();
+  } else {
+    const el = document.getElementById('login-error');
+    el.textContent = data.detail || data.non_field_errors?.[0] || 'Erro ao fazer login.';
+    el.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Entrar';
+  }
+});
+
+function showApp() {
+  document.getElementById('login-overlay').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  document.getElementById('sidebar-username').textContent = currentUser.name;
+  const roleEl = document.getElementById('sidebar-role');
+  roleEl.textContent = currentUser.role.toUpperCase();
+  roleEl.className = `badge mt-1 bg-${currentUser.role === 'admin' ? 'danger' : currentUser.role === 'analyst' ? 'info' : 'secondary'}`;
+
+  // Esconde upload se não for admin
+  if (currentUser.role !== 'admin') {
+    document.getElementById('upload-card').style.display = 'none';
+  }
+
+  loadDashboard();
+}
+
+async function logout() {
+  if (refreshToken) {
+    await apiFetch('/api/auth/logout/', {
+      method: 'POST', body: JSON.stringify({ refresh: refreshToken }),
+    });
+  }
+  localStorage.removeItem('ag_access');
+  localStorage.removeItem('ag_refresh');
+  accessToken = refreshToken = '';
+  location.reload();
+}
+
+// ════════════════════════════════════════
+//  Navegação
+// ════════════════════════════════════════
+document.querySelectorAll('.nav-link').forEach(a => {
+  a.addEventListener('click', e => {
+    e.preventDefault();
+    document.querySelectorAll('.nav-link').forEach(x => x.classList.remove('active'));
+    a.classList.add('active');
+    const sec = a.dataset.section;
+    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+    document.getElementById(`section-${sec}`).classList.add('active');
+    if (sec === 'logs')   loadLogs(1);
+    if (sec === 'models') loadModels();
+  });
+});
+
+// ════════════════════════════════════════
+//  Dashboard
+// ════════════════════════════════════════
+async function loadDashboard() {
+  const res = await apiFetch('/api/dashboard/');
+  if (!res || !res.ok) return;
+  const d = await res.json();
+
+  document.getElementById('dash-total').textContent   = d.today.total.toLocaleString('pt-BR');
+  document.getElementById('dash-attacks').textContent = d.today.attacks.toLocaleString('pt-BR');
+  document.getElementById('dash-pct').textContent     = d.today.pct_benign + '%';
+  document.getElementById('dash-latency').textContent = d.avg_latency_ms.toFixed(2) + ' ms';
+
+  // Modelo ativo
+  const m = d.active_model;
+  document.getElementById('dash-model-name').textContent = m.name + ' v' + m.version;
+  document.getElementById('dash-model-info').textContent =
+    m.accuracy ? `Acurácia: ${(m.accuracy * 100).toFixed(2)}%` : 'Sem acurácia registrada';
+  if (m.is_mock) {
+    const badge = document.getElementById('dash-mock-badge');
+    badge.textContent  = '⚠ Modelo simulado';
+    badge.className    = 'badge ms-auto bg-warning text-dark';
+    badge.style.display = '';
+  }
+
+  // Gráfico donut
+  renderDonut(d.today.benign, d.today.attacks);
+
+  // Gráfico de barras
+  renderAttackBars(d.top_attacks_7d);
+
+  // Logs recentes
+  await loadRecentLogs();
+}
+
+function renderDonut(benign, attacks) {
+  const ctx = document.getElementById('chart-donut').getContext('2d');
+  if (donutChart) donutChart.destroy();
+  donutChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Benigno', 'Ataque'],
+      datasets: [{ data: [benign, attacks], backgroundColor: ['#22c55e', '#ef4444'], borderWidth: 0 }],
+    },
+    options: {
+      plugins: { legend: { position: 'bottom', labels: { font: { size: 12 } } } },
+      cutout: '65%',
+    },
+  });
+}
+
+function renderAttackBars(topAttacks) {
+  const ctx = document.getElementById('chart-attacks').getContext('2d');
+  if (attackChart) attackChart.destroy();
+  const labels = topAttacks.map(x => x.attack_type);
+  const data   = topAttacks.map(x => x.count);
+  attackChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Ataques',
+        data,
+        backgroundColor: '#ef4444cc',
+        borderRadius: 6,
+      }],
+    },
+    options: {
+      plugins: { legend: { display: false } },
+      scales: { y: { beginAtZero: true, grid: { color: '#f1f5f9' } }, x: { grid: { display: false } } },
+      indexAxis: 'y',
+    },
+  });
+}
+
+async function loadRecentLogs() {
+  const res = await apiFetch('/api/logs/?page_size=6');
+  if (!res || !res.ok) return;
+  const d = await res.json();
+  const tbody = document.getElementById('dash-logs-body');
+  const logs = d.results || [];
+  if (!logs.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-3">Nenhum log ainda</td></tr>';
+    return;
+  }
+  tbody.innerHTML = logs.map(renderLogRow6).join('');
+}
+
+function renderLogRow6(l) {
+  const badge = l.prediction === 'ATTACK'
+    ? '<span class="badge badge-attack">Ataque</span>'
+    : '<span class="badge badge-benign">Benigno</span>';
+  return `<tr>
+    <td class="text-muted small">${fmtDate(l.timestamp)}</td>
+    <td class="small">${l.source_ip || '—'}</td>
+    <td>${badge}</td>
+    <td class="small">${l.attack_type}</td>
+    <td class="text-end small">${(l.probability * 100).toFixed(1)}%</td>
+    <td class="text-end small">${l.response_time_ms.toFixed(2)} ms</td>
+  </tr>`;
+}
+
+// ════════════════════════════════════════
+//  Predict
+// ════════════════════════════════════════
+const EXEMPLOS = {
+  BENIGN: {
+    source_ip: '192.168.1.100', protocol: 'TCP', packet_count: 45, duration: 1.2,
+    flow_duration: 1234567, tot_fwd_pkts: 8, tot_bwd_pkts: 6, totlen_fwd_pkts: 4096, totlen_bwd_pkts: 3072,
+    fwd_pkt_len_max: 1460, fwd_pkt_len_min: 40, fwd_pkt_len_mean: 512, fwd_pkt_len_std: 200,
+    bwd_pkt_len_max: 1460, bwd_pkt_len_min: 40, bwd_pkt_len_mean: 512, bwd_pkt_len_std: 200,
+    flow_byts_s: 5880, flow_pkts_s: 11.4, flow_iat_mean: 87719, flow_iat_std: 45000, flow_iat_max: 200000, flow_iat_min: 1000,
+    fwd_iat_tot: 700000, fwd_iat_mean: 100000, fwd_iat_std: 50000, fwd_iat_max: 250000, fwd_iat_min: 2000,
+    bwd_iat_tot: 600000, bwd_iat_mean: 100000, bwd_iat_std: 50000, bwd_iat_max: 250000, bwd_iat_min: 2000,
+    fwd_psh_flags: 5, bwd_psh_flags: 4, fwd_urg_flags: 0, bwd_urg_flags: 0,
+    fwd_header_len: 160, bwd_header_len: 120, fwd_pkts_s: 6.5, bwd_pkts_s: 4.9,
+    pkt_len_min: 40, pkt_len_max: 1460, pkt_len_mean: 512, pkt_len_std: 200, pkt_len_var: 40000,
+    fin_flag_cnt: 2, syn_flag_cnt: 1, rst_flag_cnt: 0, psh_flag_cnt: 9, ack_flag_cnt: 12, urg_flag_cnt: 0,
+    cwe_flag_count: 0, ece_flag_cnt: 0, down_up_ratio: 0.75,
+    pkt_size_avg: 512, fwd_seg_size_avg: 512, bwd_seg_size_avg: 512,
+    fwd_byts_b_avg: 0, fwd_pkts_b_avg: 0, fwd_blk_rate_avg: 0, bwd_byts_b_avg: 0, bwd_pkts_b_avg: 0, bwd_blk_rate_avg: 0,
+    subflow_fwd_pkts: 8, subflow_fwd_byts: 4096, subflow_bwd_pkts: 6, subflow_bwd_byts: 3072,
+    init_fwd_win_byts: 65535, init_bwd_win_byts: 65535, fwd_act_data_pkts: 5, fwd_seg_size_min: 40,
+    active_mean: 500000, active_std: 100000, active_max: 700000, active_min: 300000,
+    idle_mean: 200000, idle_std: 50000, idle_max: 400000, idle_min: 50000,
+  },
+  SYN_FLOOD: {
+    source_ip: '10.0.0.1', protocol: 'TCP', packet_count: 50000, duration: 0.5,
+    flow_duration: 500000, tot_fwd_pkts: 50000, tot_bwd_pkts: 0, totlen_fwd_pkts: 2000000, totlen_bwd_pkts: 0,
+    fwd_pkt_len_max: 60, fwd_pkt_len_min: 40, fwd_pkt_len_mean: 40, fwd_pkt_len_std: 0,
+    bwd_pkt_len_max: 0, bwd_pkt_len_min: 0, bwd_pkt_len_mean: 0, bwd_pkt_len_std: 0,
+    flow_byts_s: 4000000, flow_pkts_s: 100000, flow_iat_mean: 10, flow_iat_std: 5, flow_iat_max: 50, flow_iat_min: 5,
+    fwd_iat_tot: 500000, fwd_iat_mean: 10, fwd_iat_std: 5, fwd_iat_max: 50, fwd_iat_min: 5,
+    bwd_iat_tot: 0, bwd_iat_mean: 0, bwd_iat_std: 0, bwd_iat_max: 0, bwd_iat_min: 0,
+    fwd_psh_flags: 0, bwd_psh_flags: 0, fwd_urg_flags: 0, bwd_urg_flags: 0,
+    fwd_header_len: 2000000, bwd_header_len: 0, fwd_pkts_s: 100000, bwd_pkts_s: 0,
+    pkt_len_min: 40, pkt_len_max: 60, pkt_len_mean: 40, pkt_len_std: 2, pkt_len_var: 4,
+    fin_flag_cnt: 0, syn_flag_cnt: 50000, rst_flag_cnt: 0, psh_flag_cnt: 0, ack_flag_cnt: 0, urg_flag_cnt: 0,
+    cwe_flag_count: 0, ece_flag_cnt: 0, down_up_ratio: 0,
+    pkt_size_avg: 40, fwd_seg_size_avg: 40, bwd_seg_size_avg: 0,
+    fwd_byts_b_avg: 0, fwd_pkts_b_avg: 0, fwd_blk_rate_avg: 0, bwd_byts_b_avg: 0, bwd_pkts_b_avg: 0, bwd_blk_rate_avg: 0,
+    subflow_fwd_pkts: 50000, subflow_fwd_byts: 2000000, subflow_bwd_pkts: 0, subflow_bwd_byts: 0,
+    init_fwd_win_byts: -1, init_bwd_win_byts: -1, fwd_act_data_pkts: 0, fwd_seg_size_min: 40,
+    active_mean: 0, active_std: 0, active_max: 0, active_min: 0,
+    idle_mean: 0, idle_std: 0, idle_max: 0, idle_min: 0,
+  },
+  UDP_FLOOD: {
+    source_ip: '10.0.0.2', protocol: 'UDP', packet_count: 100000, duration: 0.3,
+    flow_duration: 300000, tot_fwd_pkts: 100000, tot_bwd_pkts: 0, totlen_fwd_pkts: 147200000, totlen_bwd_pkts: 0,
+    fwd_pkt_len_max: 1472, fwd_pkt_len_min: 1472, fwd_pkt_len_mean: 1472, fwd_pkt_len_std: 0,
+    bwd_pkt_len_max: 0, bwd_pkt_len_min: 0, bwd_pkt_len_mean: 0, bwd_pkt_len_std: 0,
+    flow_byts_s: 467000000, flow_pkts_s: 333333, flow_iat_mean: 3, flow_iat_std: 1, flow_iat_max: 10, flow_iat_min: 1,
+    fwd_iat_tot: 300000, fwd_iat_mean: 3, fwd_iat_std: 1, fwd_iat_max: 10, fwd_iat_min: 1,
+    bwd_iat_tot: 0, bwd_iat_mean: 0, bwd_iat_std: 0, bwd_iat_max: 0, bwd_iat_min: 0,
+    fwd_psh_flags: 0, bwd_psh_flags: 0, fwd_urg_flags: 0, bwd_urg_flags: 0,
+    fwd_header_len: 800000, bwd_header_len: 0, fwd_pkts_s: 333333, bwd_pkts_s: 0,
+    pkt_len_min: 1472, pkt_len_max: 1472, pkt_len_mean: 1472, pkt_len_std: 0, pkt_len_var: 0,
+    fin_flag_cnt: 0, syn_flag_cnt: 0, rst_flag_cnt: 0, psh_flag_cnt: 0, ack_flag_cnt: 0, urg_flag_cnt: 0,
+    cwe_flag_count: 0, ece_flag_cnt: 0, down_up_ratio: 0,
+    pkt_size_avg: 1472, fwd_seg_size_avg: 1472, bwd_seg_size_avg: 0,
+    fwd_byts_b_avg: 0, fwd_pkts_b_avg: 0, fwd_blk_rate_avg: 0, bwd_byts_b_avg: 0, bwd_pkts_b_avg: 0, bwd_blk_rate_avg: 0,
+    subflow_fwd_pkts: 100000, subflow_fwd_byts: 147200000, subflow_bwd_pkts: 0, subflow_bwd_byts: 0,
+    init_fwd_win_byts: -1, init_bwd_win_byts: -1, fwd_act_data_pkts: 100000, fwd_seg_size_min: 1472,
+    active_mean: 0, active_std: 0, active_max: 0, active_min: 0,
+    idle_mean: 0, idle_std: 0, idle_max: 0, idle_min: 0,
+  },
+  HTTP_FLOOD: {
+    source_ip: '10.0.0.3', protocol: 'TCP', packet_count: 20000, duration: 2.0,
+    flow_duration: 2000000, tot_fwd_pkts: 10000, tot_bwd_pkts: 10000, totlen_fwd_pkts: 5000000, totlen_bwd_pkts: 20000000,
+    fwd_pkt_len_max: 1460, fwd_pkt_len_min: 200, fwd_pkt_len_mean: 500, fwd_pkt_len_std: 150,
+    bwd_pkt_len_max: 1460, bwd_pkt_len_min: 200, bwd_pkt_len_mean: 2000, bwd_pkt_len_std: 500,
+    flow_byts_s: 12500000, flow_pkts_s: 10000, flow_iat_mean: 100, flow_iat_std: 50, flow_iat_max: 500, flow_iat_min: 10,
+    fwd_iat_tot: 2000000, fwd_iat_mean: 200, fwd_iat_std: 100, fwd_iat_max: 1000, fwd_iat_min: 10,
+    bwd_iat_tot: 2000000, bwd_iat_mean: 200, bwd_iat_std: 100, bwd_iat_max: 1000, bwd_iat_min: 10,
+    fwd_psh_flags: 9000, bwd_psh_flags: 9000, fwd_urg_flags: 0, bwd_urg_flags: 0,
+    fwd_header_len: 200000, bwd_header_len: 200000, fwd_pkts_s: 5000, bwd_pkts_s: 5000,
+    pkt_len_min: 200, pkt_len_max: 1460, pkt_len_mean: 1250, pkt_len_std: 300, pkt_len_var: 90000,
+    fin_flag_cnt: 100, syn_flag_cnt: 100, rst_flag_cnt: 50, psh_flag_cnt: 18000, ack_flag_cnt: 20000, urg_flag_cnt: 0,
+    cwe_flag_count: 0, ece_flag_cnt: 0, down_up_ratio: 1.0,
+    pkt_size_avg: 1250, fwd_seg_size_avg: 500, bwd_seg_size_avg: 2000,
+    fwd_byts_b_avg: 0, fwd_pkts_b_avg: 0, fwd_blk_rate_avg: 0, bwd_byts_b_avg: 0, bwd_pkts_b_avg: 0, bwd_blk_rate_avg: 0,
+    subflow_fwd_pkts: 10000, subflow_fwd_byts: 5000000, subflow_bwd_pkts: 10000, subflow_bwd_byts: 20000000,
+    init_fwd_win_byts: 65535, init_bwd_win_byts: 65535, fwd_act_data_pkts: 9000, fwd_seg_size_min: 200,
+    active_mean: 500000, active_std: 200000, active_max: 1000000, active_min: 100000,
+    idle_mean: 100000, idle_std: 50000, idle_max: 200000, idle_min: 10000,
+  },
+};
+
+function loadExample(key) {
+  const ex = EXEMPLOS[key];
+  document.getElementById('p-source_ip').value    = ex.source_ip || '';
+  document.getElementById('p-protocol').value     = ex.protocol  || '';
+  document.getElementById('p-packet_count').value  = ex.packet_count || '';
+
+  // Extrai apenas as features (sem metadados)
+  const META = ['source_ip', 'protocol', 'packet_count', 'duration'];
+  const features = Object.fromEntries(Object.entries(ex).filter(([k]) => !META.includes(k)));
+  document.getElementById('json-input').value = JSON.stringify(features, null, 2);
+}
+
+function formatJson() {
+  try {
+    const v = JSON.parse(document.getElementById('json-input').value);
+    document.getElementById('json-input').value = JSON.stringify(v, null, 2);
+  } catch { toast('JSON inválido'); }
+}
+
+async function runPredict() {
+  let features;
+  try {
+    features = JSON.parse(document.getElementById('json-input').value || '{}');
+  } catch {
+    toast('JSON inválido — verifique a sintaxe.', 'danger'); return;
+  }
+
+  const payload = {
+    source_ip:    document.getElementById('p-source_ip').value    || undefined,
+    protocol:     document.getElementById('p-protocol').value     || undefined,
+    packet_count: parseInt(document.getElementById('p-packet_count').value) || 0,
+    ...features,
+  };
+
+  const btn = document.getElementById('predict-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Classificando...';
+
+  const res = await apiFetch('/api/predict/', { method: 'POST', body: JSON.stringify(payload) });
+  btn.disabled = false;
+  btn.innerHTML = '<i class="bi bi-play-fill me-1"></i>Analisar Tráfego';
+
+  if (!res || !res.ok) { toast('Erro ao chamar a API.', 'danger'); return; }
+  const d = await res.json();
+
+  showPredictResult(d);
+}
+
+function showPredictResult(d) {
+  document.getElementById('predict-empty').style.display  = 'none';
+  document.getElementById('predict-result').style.display = 'block';
+
+  const isAttack = d.prediction === 'ATTACK';
+  const card = document.getElementById('result-card');
+  card.className = `result-card mb-3 ${isAttack ? 'attack' : 'benign'}`;
+
+  document.getElementById('result-icon').textContent = isAttack ? '🚨' : '✅';
+  document.getElementById('result-pred').textContent  = isAttack ? 'ATAQUE' : 'BENIGNO';
+  document.getElementById('result-type').textContent  = d.attack_type;
+  document.getElementById('result-prob').textContent  = (d.probability * 100).toFixed(1) + '%';
+  document.getElementById('result-latency').textContent  = d.response_time_ms.toFixed(3) + ' ms';
+  document.getElementById('result-log-id').textContent   = '#' + d.log_id;
+  document.getElementById('result-model-type').textContent = d.is_mock ? '⚠ Simulado' : '✅ Treinado';
+
+  const pct = (d.probability * 100).toFixed(1);
+  const fill = document.getElementById('prob-fill');
+  fill.style.width = pct + '%';
+  fill.style.background = isAttack ? '#ef4444' : '#22c55e';
+  document.getElementById('prob-label').textContent = pct + '% de confiança';
+
+  const interpretations = {
+    'BENIGN':           'O fluxo apresenta características de tráfego legítimo de rede.',
+    'SYN Flood':        'Alto volume de pacotes SYN sem ACK — padrão típico de ataque TCP SYN Flood, que esgota a tabela de conexões semi-abertas do alvo.',
+    'UDP Flood':        'Fluxo de datagrama UDP massivo e unidirecional — característico de UDP Flood, que satura a largura de banda e os recursos do servidor.',
+    'HTTP Flood':       'Requisições HTTP em alta taxa com flags PSH+ACK — padrão de HTTP Flood na camada de aplicação, difícil de distinguir de tráfego legítimo.',
+    'DoS GoldenEye':    'Ataque DoS de camada de aplicação com conexões HTTP persistentes.',
+    'DoS Hulk':         'Ataque DoS que gera requisições HTTP aleatórias para dificultar cache.',
+    'DoS Slowhttptest': 'Ataque slowloris — mantém conexões abertas com dados lentos para esgotar recursos.',
+    'DDoS':             'Tráfego distribuído de múltiplas origens — ataque DDoS volumétrico.',
+  };
+  document.getElementById('result-interpretation').textContent =
+    interpretations[d.attack_type] || (isAttack
+      ? `Tráfego classificado como ataque do tipo "${d.attack_type}". Recomenda-se bloquear o IP de origem.`
+      : 'Tráfego dentro dos padrões normais de comunicação de rede.');
+}
+
+// ════════════════════════════════════════
+//  Logs
+// ════════════════════════════════════════
+async function loadLogs(page = 1) {
+  currentPage = page;
+  const ip   = document.getElementById('filter-ip').value;
+  const pred = document.getElementById('filter-pred').value;
+  const from = document.getElementById('filter-from').value;
+  const to   = document.getElementById('filter-to').value;
+
+  let qs = `?page=${page}`;
+  if (ip)   qs += `&source_ip=${encodeURIComponent(ip)}`;
+  if (pred) qs += `&prediction=${pred}`;
+  if (from) qs += `&date_from=${from}`;
+  if (to)   qs += `&date_to=${to}`;
+
+  const res = await apiFetch('/api/logs/' + qs);
+  if (!res || !res.ok) return;
+  const d = await res.json();
+
+  const tbody = document.getElementById('logs-body');
+  tbody.innerHTML = d.results.length
+    ? d.results.map(renderLogRow8).join('')
+    : '<tr><td colspan="8" class="text-center text-muted py-3">Nenhum resultado</td></tr>';
+
+  document.getElementById('logs-count').textContent =
+    `${d.count.toLocaleString('pt-BR')} registros`;
+  document.getElementById('page-info').textContent = `Pág. ${page}`;
+  document.getElementById('btn-prev').disabled = !d.previous;
+  document.getElementById('btn-next').disabled = !d.next;
+}
+
+function renderLogRow8(l) {
+  const badge = l.prediction === 'ATTACK'
+    ? '<span class="badge badge-attack">Ataque</span>'
+    : '<span class="badge badge-benign">Benigno</span>';
+  return `<tr>
+    <td class="text-muted small">${l.id}</td>
+    <td class="small">${fmtDate(l.timestamp)}</td>
+    <td class="small">${l.source_ip || '—'}</td>
+    <td class="small">${l.protocol || '—'}</td>
+    <td>${badge}</td>
+    <td class="small">${l.attack_type}</td>
+    <td class="text-end small">${(l.probability * 100).toFixed(1)}%</td>
+    <td class="text-end small">${l.response_time_ms.toFixed(3)}</td>
+  </tr>`;
+}
+
+function clearFilters() {
+  ['filter-ip','filter-pred','filter-from','filter-to'].forEach(id => {
+    document.getElementById(id).value = '';
+  });
+  loadLogs(1);
+}
+
+// ════════════════════════════════════════
+//  Models
+// ════════════════════════════════════════
+async function loadModels() {
+  const res = await apiFetch('/api/model/list/');
+  if (!res || !res.ok) return;
+  const models = await res.json();
+  const el = document.getElementById('models-list');
+  if (!models.length) {
+    el.innerHTML = '<div class="text-muted py-3 text-center">Nenhum modelo registrado. Treine e faça upload do .pkl.</div>';
+    return;
+  }
+  el.innerHTML = models.map(m => `
+    <div class="d-flex align-items-center gap-3 p-3 border rounded mb-2 ${m.is_active ? 'bg-success bg-opacity-10 border-success' : ''}">
+      <i class="bi bi-box-seam fs-4 ${m.is_active ? 'text-success' : 'text-muted'}"></i>
+      <div class="flex-grow-1">
+        <div class="fw-semibold">${m.name} <span class="text-muted small">v${m.version}</span>
+          ${m.is_active ? '<span class="badge bg-success ms-2">Ativo</span>' : ''}
+        </div>
+        <div class="small text-muted">${m.description || 'Sem descrição'}</div>
+        ${m.accuracy ? `<div class="small text-muted">Acurácia: <strong>${(m.accuracy*100).toFixed(2)}%</strong></div>` : ''}
+      </div>
+      <div class="text-end text-muted small">${fmtDate(m.created_at)}</div>
+    </div>
+  `).join('');
+}
+
+async function uploadModel() {
+  const name    = document.getElementById('m-name').value;
+  const version = document.getElementById('m-version').value;
+  const file    = document.getElementById('m-file').files[0];
+  const errEl   = document.getElementById('upload-error');
+  errEl.style.display = 'none';
+
+  if (!name || !version || !file) {
+    errEl.textContent   = 'Preencha nome, versão e selecione o arquivo .pkl.';
+    errEl.style.display = 'block'; return;
+  }
+
+  const form = new FormData();
+  form.append('name', name);
+  form.append('version', version);
+  form.append('model_file', file);
+  const acc = document.getElementById('m-accuracy').value;
+  if (acc) form.append('accuracy', acc);
+  const desc = document.getElementById('m-description').value;
+  if (desc) form.append('description', desc);
+
+  const res = await fetch(API + '/api/model/update/', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${accessToken}` },
+    body: form,
+  });
+  if (res.ok) {
+    toast('Modelo publicado com sucesso!', 'success');
+    loadModels();
+  } else {
+    const d = await res.json();
+    errEl.textContent   = JSON.stringify(d);
+    errEl.style.display = 'block';
+  }
+}
+
+// ════════════════════════════════════════
+//  Utilitários UI
+// ════════════════════════════════════════
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit',
+    hour: '2-digit', minute: '2-digit' });
+}
+
+function toast(msg, type = 'info') {
+  const container = document.getElementById('toast-container');
+  const el = document.createElement('div');
+  el.className = 'toast-msg';
+  el.textContent = msg;
+  if (type === 'danger') el.style.borderLeft = '4px solid #ef4444';
+  if (type === 'success') el.style.borderLeft = '4px solid #22c55e';
+  container.appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+
+// ════════════════════════════════════════
+//  Init
+// ════════════════════════════════════════
+if (accessToken) {
+  // Tenta restaurar sessão
+  apiFetch('/api/auth/me/').then(async res => {
+    if (res && res.ok) {
+      currentUser = await res.json();
+      showApp();
+    } else {
+      localStorage.removeItem('ag_access');
+      localStorage.removeItem('ag_refresh');
+    }
+  });
+}
+</script>
+</body>
+</html>

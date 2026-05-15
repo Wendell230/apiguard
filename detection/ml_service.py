@@ -1,7 +1,7 @@
 """
 Serviço singleton de predição ML.
-Carrega o modelo .pkl ativo na inicialização e expõe o método predict().
-Se nenhum modelo treinado existir, usa um simulador para desenvolvimento.
+Carrega o modelo .pkl ativo e colunas_modelo.pkl na inicialização.
+Fallback: modelo simulado se nenhum .pkl treinado existir.
 """
 import random
 import time
@@ -16,25 +16,25 @@ from django.conf import settings
 class _MockModel:
     """Modelo simulado para desenvolvimento sem .pkl treinado."""
 
-    CLASSES = ['BENIGN', 'SYN Flood', 'UDP Flood', 'HTTP Flood', 'DNS Amplification']
-    # Distribuição realista: maioria benigna
-    WEIGHTS = [0.70, 0.10, 0.08, 0.07, 0.05]
+    CLASSES = ['BENIGN', 'DoS GoldenEye', 'DoS Hulk', 'DoS Slowhttptest', 'DoS slowloris',
+               'DDoS', 'PortScan', 'FTP-Patator', 'SSH-Patator', 'Bot', 'Infiltration',
+               'Web Attack Brute Force', 'Web Attack XSS', 'Web Attack Sql Injection',
+               'Heartbleed']
+    WEIGHTS = [0.60, 0.06, 0.06, 0.05, 0.04, 0.05, 0.04, 0.02, 0.02, 0.02, 0.01, 0.01, 0.01, 0.005, 0.005]
 
     def predict_proba(self, X):
-        probs = []
+        result = []
         for _ in X:
-            # Distribui probabilidade de forma aleatória mas ponderada
             chosen = random.choices(self.CLASSES, weights=self.WEIGHTS, k=1)[0]
             idx = self.CLASSES.index(chosen)
-            row = [0.01] * len(self.CLASSES)
+            row = [0.005] * len(self.CLASSES)
             row[idx] = 0.75 + random.random() * 0.20
             total = sum(row)
-            probs.append([p / total for p in row])
-        return probs
+            result.append([p / total for p in row])
+        return result
 
     def predict(self, X):
-        probas = self.predict_proba(X)
-        return [self.CLASSES[p.index(max(p))] for p in probas]
+        return [self.CLASSES[p.index(max(p))] for p in self.predict_proba(X)]
 
     @property
     def classes_(self):
@@ -56,80 +56,84 @@ class MLService:
         if self._initialized:
             return
         self._model = None
-        self._scaler = None
+        self._feature_columns = None
         self._is_mock = False
         self._load_active_model()
         self._initialized = True
 
     def _load_active_model(self):
-        """Tenta carregar o modelo ativo do banco; cai no mock se não encontrar."""
+        """Tenta carregar o modelo ativo do banco; fallback para mock."""
         try:
-            # Importação local para evitar importação circular no boot do Django
             from detection.models import MLModel
             active = MLModel.objects.filter(is_active=True).first()
             if active:
                 model_path = Path(active.file_path)
                 if model_path.exists():
                     self._model = joblib.load(model_path)
-                    # Tenta carregar scaler na mesma pasta
-                    scaler_path = model_path.parent / 'scaler.pkl'
-                    if scaler_path.exists():
-                        self._scaler = joblib.load(scaler_path)
+                    # Carrega lista de colunas salva pelo train.py
+                    cols_path = model_path.parent / 'colunas_modelo.pkl'
+                    if cols_path.exists():
+                        self._feature_columns = joblib.load(cols_path)
                     self._is_mock = False
                     return
         except Exception:
             pass
 
-        # Fallback para modelo simulado
+        # Tenta carregar colunas_modelo.pkl global mesmo sem modelo ativo
+        try:
+            cols_path = Path(settings.ML_MODELS_DIR) / 'colunas_modelo.pkl'
+            if cols_path.exists():
+                self._feature_columns = joblib.load(cols_path)
+        except Exception:
+            pass
+
         self._model = _MockModel()
         self._is_mock = True
 
     def reload(self):
-        """Força o recarregamento do modelo (chamado após upload de novo .pkl)."""
+        """Recarrega o modelo após upload de novo .pkl."""
         self._initialized = False
         self._load_active_model()
         self._initialized = True
 
     def predict(self, features_dict: dict[str, Any]) -> dict:
         """
-        Classifica um vetor de features de tráfego de rede.
+        Classifica um vetor de features de tráfego.
 
-        Retorna:
-            prediction: 'BENIGN' ou 'ATTACK'
-            attack_type: classe específica do ataque
-            probability: confiança da predição (0–1)
-            response_time_ms: latência da inferência
-            is_mock: se a predição veio do simulador
+        features_dict: chaves são nomes originais do CSV (ex: 'Flow Duration').
+        Retorna prediction, attack_type, probability, response_time_ms, is_mock.
         """
         start = time.perf_counter()
 
-        # Converte dict para lista ordenada de valores numéricos
-        feature_vector = [float(v) for v in features_dict.values()]
+        # Ordena features conforme a lista salva no treino; 0.0 para ausentes
+        if self._feature_columns:
+            feature_vector = [float(features_dict.get(col, 0.0)) for col in self._feature_columns]
+        else:
+            feature_vector = [float(v) for v in features_dict.values()]
 
-        # Aplica scaler se disponível
         X = [feature_vector]
-        if self._scaler is not None:
-            X = self._scaler.transform(X)
-
         probas = self._model.predict_proba(X)[0]
         classes = self._model.classes_
 
-        top_idx = probas.index(max(probas)) if isinstance(probas, list) else probas.argmax()
-        attack_type = classes[top_idx]
-        probability = float(max(probas) if isinstance(probas, list) else probas[top_idx])
+        if isinstance(probas, list):
+            top_idx = probas.index(max(probas))
+            probability = float(probas[top_idx])
+        else:
+            top_idx = int(probas.argmax())
+            probability = float(probas[top_idx])
 
-        prediction = 'BENIGN' if attack_type == 'BENIGN' else 'ATTACK'
+        attack_type = classes[top_idx]
+        prediction = 'BENIGN' if str(attack_type).upper() == 'BENIGN' else 'ATTACK'
 
         elapsed_ms = (time.perf_counter() - start) * 1000
 
         return {
             'prediction': prediction,
-            'attack_type': attack_type,
+            'attack_type': str(attack_type),
             'probability': round(probability, 4),
             'response_time_ms': round(elapsed_ms, 3),
             'is_mock': self._is_mock,
         }
 
 
-# Instância global — carregada uma única vez
 ml_service = MLService()

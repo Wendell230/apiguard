@@ -1,143 +1,98 @@
 """
-Pré-processamento do dataset CIC-DDoS2019.
+Pré-processamento do dataset 5G DoS/DDoS.
 
 Uso:
-    python ml/preprocess.py --input /caminho/para/dataset.csv --output ml/models/
+    python ml/preprocess.py --input entrada/5G_DoS_DDoS_dataset.csv --output ml/models/
 
 O script:
-1. Carrega CSV(s) do CIC-DDoS2019
-2. Trata valores nulos e infinitos
-3. Remove features com variância zero
-4. Normaliza com StandardScaler
-5. Salva scaler.pkl e X_preprocessed.npy / y.npy para o treino
+1. Carrega CSV do dataset 5G DoS/DDoS
+2. Trata valores nulos e infinitos (substitui por 0)
+3. Salva colunas_modelo.pkl para uso posterior na inferência
+4. Salva X_preprocessed.npy e y.npy para o treino
+Obs: não usa StandardScaler — conforme pipeline do TCC.
 """
 import argparse
 import json
-import sys
 from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
-import joblib
-from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.feature_selection import VarianceThreshold
+from sklearn.preprocessing import LabelEncoder
 
-
-# Features numéricas a usar (subconjunto relevante CIC-DDoS2019)
-FEATURE_COLUMNS = [
-    'Flow Duration', 'Total Fwd Packets', 'Total Backward Packets',
-    'Total Length of Fwd Packets', 'Total Length of Bwd Packets',
-    'Fwd Packet Length Max', 'Fwd Packet Length Min',
-    'Fwd Packet Length Mean', 'Fwd Packet Length Std',
-    'Bwd Packet Length Max', 'Bwd Packet Length Min',
-    'Bwd Packet Length Mean', 'Bwd Packet Length Std',
-    'Flow Bytes/s', 'Flow Packets/s',
-    'Flow IAT Mean', 'Flow IAT Std', 'Flow IAT Max', 'Flow IAT Min',
-    'SYN Flag Count', 'RST Flag Count', 'PSH Flag Count', 'ACK Flag Count',
-    'Average Packet Size', 'Avg Fwd Segment Size', 'Avg Bwd Segment Size',
+# Colunas exatas do dataset (mesma ordem do TCC)
+COLUNAS_USADAS = [
+    'Flow Duration', 'Tot Fwd Pkts', 'Tot Bwd Pkts', 'TotLen Fwd Pkts', 'TotLen Bwd Pkts',
+    'Fwd Pkt Len Max', 'Fwd Pkt Len Min', 'Fwd Pkt Len Mean', 'Fwd Pkt Len Std',
+    'Bwd Pkt Len Max', 'Bwd Pkt Len Min', 'Bwd Pkt Len Mean', 'Bwd Pkt Len Std',
+    'Flow Byts/s', 'Flow Pkts/s', 'Flow IAT Mean', 'Flow IAT Std', 'Flow IAT Max', 'Flow IAT Min',
+    'Fwd IAT Tot', 'Fwd IAT Mean', 'Fwd IAT Std', 'Fwd IAT Max', 'Fwd IAT Min',
+    'Bwd IAT Tot', 'Bwd IAT Mean', 'Bwd IAT Std', 'Bwd IAT Max', 'Bwd IAT Min',
+    'Fwd PSH Flags', 'Bwd PSH Flags', 'Fwd URG Flags', 'Bwd URG Flags',
+    'Fwd Header Len', 'Bwd Header Len', 'Fwd Pkts/s', 'Bwd Pkts/s',
+    'Pkt Len Min', 'Pkt Len Max', 'Pkt Len Mean', 'Pkt Len Std', 'Pkt Len Var',
+    'FIN Flag Cnt', 'SYN Flag Cnt', 'RST Flag Cnt', 'PSH Flag Cnt', 'ACK Flag Cnt', 'URG Flag Cnt',
+    'CWE Flag Count', 'ECE Flag Cnt', 'Down/Up Ratio', 'Pkt Size Avg', 'Fwd Seg Size Avg', 'Bwd Seg Size Avg',
+    'Fwd Byts/b Avg', 'Fwd Pkts/b Avg', 'Fwd Blk Rate Avg', 'Bwd Byts/b Avg', 'Bwd Pkts/b Avg', 'Bwd Blk Rate Avg',
+    'Subflow Fwd Pkts', 'Subflow Fwd Byts', 'Subflow Bwd Pkts', 'Subflow Bwd Byts',
+    'Init Fwd Win Byts', 'Init Bwd Win Byts', 'Fwd Act Data Pkts', 'Fwd Seg Size Min',
+    'Active Mean', 'Active Std', 'Active Max', 'Active Min',
+    'Idle Mean', 'Idle Std', 'Idle Max', 'Idle Min',
 ]
 
 LABEL_COLUMN = 'Label'
 
 
-def load_dataset(input_path: Path) -> pd.DataFrame:
-    """Carrega um CSV ou todos os CSVs de um diretório."""
-    if input_path.is_dir():
-        frames = [pd.read_csv(p) for p in input_path.glob('*.csv')]
-        if not frames:
-            raise FileNotFoundError(f'Nenhum CSV encontrado em {input_path}')
-        df = pd.concat(frames, ignore_index=True)
-    else:
-        df = pd.read_csv(input_path)
-
-    # Normaliza nomes de colunas (remove espaços extras)
-    df.columns = df.columns.str.strip()
-    print(f'[preprocess] Dataset carregado: {len(df):,} amostras, {df.shape[1]} colunas.')
-    return df
-
-
-def clean(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
-    """Extrai features e label; remove NaN e inf."""
-    # Seleciona apenas colunas existentes
-    available = [c for c in FEATURE_COLUMNS if c in df.columns]
-    missing = set(FEATURE_COLUMNS) - set(available)
-    if missing:
-        print(f'[preprocess] AVISO: colunas ausentes no dataset → {missing}')
-
-    X = df[available].copy()
-    y = df[LABEL_COLUMN].copy()
-
-    # Remove linhas sem label
-    mask = y.notna()
-    X, y = X[mask], y[mask]
-
-    # Substitui inf por NaN e preenche com mediana da coluna
-    X.replace([np.inf, -np.inf], np.nan, inplace=True)
-    X.fillna(X.median(numeric_only=True), inplace=True)
-
-    # Garante tipos numéricos
-    X = X.apply(pd.to_numeric, errors='coerce').fillna(0)
-
-    print(f'[preprocess] Após limpeza: {len(X):,} amostras, {X.shape[1]} features.')
-    return X, y
-
-
-def remove_zero_variance(X: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    """Remove features com variância zero (constantes)."""
-    selector = VarianceThreshold(threshold=0)
-    selector.fit(X)
-    kept = X.columns[selector.get_support()].tolist()
-    removed = list(set(X.columns) - set(kept))
-    if removed:
-        print(f'[preprocess] Features removidas (variância zero): {removed}')
-    X = X[kept]
-    return X, kept
-
-
 def preprocess(input_path: str, output_dir: str):
-    input_path = Path(input_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    df = load_dataset(input_path)
-    X, y = clean(df)
-    X, kept_features = remove_zero_variance(X)
+    print(f'[preprocess] Carregando: {input_path}')
+    df = pd.read_csv(input_path)
+    df.columns = df.columns.str.strip()
 
-    # Codifica labels para inteiros
+    # Converte features para numérico; erros viram NaN
+    for col in COLUNAS_USADAS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # Preenche NaN e inf com 0 (mesma lógica do TCC)
+    df[COLUNAS_USADAS] = df[COLUNAS_USADAS].fillna(0)
+    df[COLUNAS_USADAS] = df[COLUNAS_USADAS].replace([np.inf, -np.inf], 0)
+
+    X = df[COLUNAS_USADAS].values
+    y = df[LABEL_COLUMN].values
+
+    print(f'[preprocess] {len(X):,} amostras | {X.shape[1]} features')
+    print(f'[preprocess] Distribuição:\n{pd.Series(y).value_counts().to_string()}')
+
+    # Codifica labels
     le = LabelEncoder()
     y_encoded = le.fit_transform(y)
 
-    # Normalização
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
     # Salva artefatos
-    joblib.dump(scaler, output_dir / 'scaler.pkl')
-    joblib.dump(le, output_dir / 'label_encoder.pkl')
-    np.save(output_dir / 'X_preprocessed.npy', X_scaled)
+    np.save(output_dir / 'X_preprocessed.npy', X)
     np.save(output_dir / 'y.npy', y_encoded)
+    joblib.dump(COLUNAS_USADAS, output_dir / 'colunas_modelo.pkl')
+    joblib.dump(le, output_dir / 'label_encoder.pkl')
 
     metadata = {
-        'features': kept_features,
+        'features': COLUNAS_USADAS,
         'classes': le.classes_.tolist(),
         'n_samples': int(len(X)),
         'n_features': int(X.shape[1]),
-        'class_distribution': {
-            cls: int((y == cls).sum()) for cls in le.classes_
-        },
+        'class_distribution': {cls: int((y == cls).sum()) for cls in le.classes_},
     }
     with open(output_dir / 'preprocessing_metadata.json', 'w') as f:
         json.dump(metadata, f, indent=2, ensure_ascii=False)
 
     print(f'[preprocess] Artefatos salvos em: {output_dir}')
-    print(f'[preprocess] Classes: {le.classes_.tolist()}')
-    print(f'[preprocess] Distribuição:\n{pd.Series(y).value_counts().to_string()}')
     return metadata
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Pré-processa o dataset CIC-DDoS2019.')
-    parser.add_argument('--input', required=True, help='CSV ou diretório com CSVs')
+    parser = argparse.ArgumentParser(description='Pré-processa o dataset 5G DoS/DDoS.')
+    parser.add_argument('--input', required=True, help='Caminho do CSV')
     parser.add_argument('--output', default='ml/models/', help='Diretório de saída')
     args = parser.parse_args()
     preprocess(args.input, args.output)
