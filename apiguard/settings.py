@@ -13,7 +13,7 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-chave-padrao-apenas-para-dev')
+SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-railway-default-mude-em-producao-12345')
 
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
