@@ -62,7 +62,13 @@ class MLService:
         self._initialized = True
 
     def _load_active_model(self):
-        """Tenta carregar o modelo ativo do banco; fallback para mock."""
+        """
+        Ordem de carregamento:
+        1. Modelo marcado como ativo no banco de dados
+        2. ml/models/modelo_rf_otimizado.pkl (arquivo do TCC, commitado no repo)
+        3. Fallback: modelo simulado (_MockModel)
+        """
+        # 1. Modelo ativo no banco
         try:
             from detection.models import MLModel
             active = MLModel.objects.filter(is_active=True).first()
@@ -70,7 +76,6 @@ class MLService:
                 model_path = Path(active.file_path)
                 if model_path.exists():
                     self._model = joblib.load(model_path)
-                    # Carrega lista de colunas salva pelo train.py
                     cols_path = model_path.parent / 'colunas_modelo.pkl'
                     if cols_path.exists():
                         self._feature_columns = joblib.load(cols_path)
@@ -79,14 +84,20 @@ class MLService:
         except Exception:
             pass
 
-        # Tenta carregar colunas_modelo.pkl global mesmo sem modelo ativo
+        # 2. Arquivo padrão do TCC commitado no repositório
         try:
-            cols_path = Path(settings.ML_MODELS_DIR) / 'colunas_modelo.pkl'
-            if cols_path.exists():
-                self._feature_columns = joblib.load(cols_path)
+            default_model = Path(settings.ML_MODELS_DIR) / 'modelo_rf_otimizado.pkl'
+            default_cols  = Path(settings.ML_MODELS_DIR) / 'colunas_modelo.pkl'
+            if default_model.exists():
+                self._model = joblib.load(default_model)
+                if default_cols.exists():
+                    self._feature_columns = joblib.load(default_cols)
+                self._is_mock = False
+                return
         except Exception:
             pass
 
+        # 3. Mock para desenvolvimento sem modelo
         self._model = _MockModel()
         self._is_mock = True
 

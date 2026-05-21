@@ -1,0 +1,44 @@
+# Ambiente virtual
+.venv/
+venv/
+env/
+
+# Variáveis de ambiente (não subir segredos)
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Banco de dados local
+db.sqlite3
+
+# Saídas do treinamento
+saida_DT/
+regras_primeira_arvore_rf.txt
+
+# Arquivos gerados pelo preprocess
+ml/models/X_preprocessed.npy
+ml/models/y.npy
+ml/models/label_encoder.pkl
+ml/models/preprocessing_metadata.json
+
+# Os .pkl do modelo SÃO commitados (necessário para o deploy)
+# ml/models/modelo_rf_otimizado.pkl  ← NÃO ignorar
+# ml/models/colunas_modelo.pkl       ← NÃO ignorar
+
+# Static files gerados
+staticfiles/
+media/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
