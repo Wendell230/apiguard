@@ -10,11 +10,12 @@ if [ -n "$DJANGO_SUPERUSER_EMAIL" ] && [ -n "$DJANGO_SUPERUSER_PASSWORD" ]; then
 from authentication.models import User
 email = '$DJANGO_SUPERUSER_EMAIL'
 password = '$DJANGO_SUPERUSER_PASSWORD'
+name = '${DJANGO_SUPERUSER_NAME:-Admin}'
 if not User.objects.filter(email=email).exists():
-    User.objects.create_superuser(email=email, password=password)
-    print(f'Superusuário {email} criado com sucesso.')
+    User.objects.create_superuser(email=email, password=password, name=name)
+    print('Superusuario criado:', email)
 else:
-    print(f'Superusuário {email} já existe.')
+    print('Superusuario ja existe:', email)
 "
 fi
 
