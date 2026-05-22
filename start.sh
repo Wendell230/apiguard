@@ -4,19 +4,17 @@ set -e
 python manage.py migrate --noinput
 python manage.py collectstatic --noinput --clear
 
-# Cria superusuário automaticamente se as variáveis estiverem definidas
-if [ -n "$DJANGO_SUPERUSER_EMAIL" ] && [ -n "$DJANGO_SUPERUSER_PASSWORD" ]; then
-    python manage.py shell -c "
+python manage.py shell -c "
+import os
 from authentication.models import User
-email = '$DJANGO_SUPERUSER_EMAIL'
-password = '$DJANGO_SUPERUSER_PASSWORD'
-name = '${DJANGO_SUPERUSER_NAME:-Admin}'
-if not User.objects.filter(email=email).exists():
+email = os.environ.get('DJANGO_SUPERUSER_EMAIL', 'admin@apiguard.com')
+password = os.environ.get('DJANGO_SUPERUSER_PASSWORD', 'Admin@2026')
+name = os.environ.get('DJANGO_SUPERUSER_NAME', 'Admin')
+if not User.objects.filter(is_superuser=True).exists():
     User.objects.create_superuser(email=email, password=password, name=name)
-    print('Superusuario criado:', email)
+    print('Admin criado:', email)
 else:
-    print('Superusuario ja existe:', email)
+    print('Admin ja existe.')
 "
-fi
 
-exec gunicorn apiguard.wsgi --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+exec gunicorn apiguard.wsgi --bind 0.0.0.0:\$PORT --workers 2 --timeout 120
