@@ -17,4 +17,4 @@ else:
     print('Admin ja existe.')
 "
 
-exec gunicorn apiguard.wsgi --bind 0.0.0.0:\$PORT --workers 2 --timeout 120
+exec gunicorn apiguard.wsgi --bind 0.0.0.0:$PORT --workers 2 --timeout 120
