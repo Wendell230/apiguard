@@ -75,27 +75,40 @@ class MLService:
             if active:
                 model_path = Path(active.file_path)
                 if model_path.exists():
-                    self._model = joblib.load(model_path)
+                    model = joblib.load(model_path)
                     cols_path = model_path.parent / 'colunas_modelo.pkl'
-                    if cols_path.exists():
-                        self._feature_columns = joblib.load(cols_path)
+                    cols = joblib.load(cols_path) if cols_path.exists() else None
+                    # Valida que o modelo e as colunas são compatíveis
+                    if cols and hasattr(model, 'n_features_in_') and model.n_features_in_ != len(cols):
+                        raise ValueError(
+                            f'Incompatibilidade: modelo espera {model.n_features_in_} features, '
+                            f'colunas_modelo.pkl tem {len(cols)}.'
+                        )
+                    self._model = model
+                    self._feature_columns = cols
                     self._is_mock = False
                     return
-        except Exception:
-            pass
+        except Exception as e:
+            print(f'[ml_service] AVISO ao carregar modelo do banco: {e}')
 
         # 2. Arquivo padrão do TCC commitado no repositório
         try:
             default_model = Path(settings.ML_MODELS_DIR) / 'modelo_rf_otimizado.pkl'
             default_cols  = Path(settings.ML_MODELS_DIR) / 'colunas_modelo.pkl'
             if default_model.exists():
-                self._model = joblib.load(default_model)
-                if default_cols.exists():
-                    self._feature_columns = joblib.load(default_cols)
+                model = joblib.load(default_model)
+                cols = joblib.load(default_cols) if default_cols.exists() else None
+                if cols and hasattr(model, 'n_features_in_') and model.n_features_in_ != len(cols):
+                    raise ValueError(
+                        f'modelo_rf_otimizado.pkl espera {model.n_features_in_} features, '
+                        f'colunas_modelo.pkl tem {len(cols)} — usando mock.'
+                    )
+                self._model = model
+                self._feature_columns = cols
                 self._is_mock = False
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            print(f'[ml_service] AVISO ao carregar modelo padrão: {e}')
 
         # 3. Mock para desenvolvimento sem modelo
         self._model = _MockModel()

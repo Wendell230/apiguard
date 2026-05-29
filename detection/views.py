@@ -10,6 +10,7 @@ from rest_framework import status
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework.viewsets import ReadOnlyModelViewSet
 
@@ -30,6 +31,8 @@ class PredictView(APIView):
     Recebe features de tráfego, classifica com Random Forest e persiste o log.
     """
     permission_classes = (IsAuthenticated,)
+    throttle_classes   = (ScopedRateThrottle,)
+    throttle_scope     = 'predict'
 
     def post(self, request):
         serializer = PredictRequestSerializer(data=request.data)

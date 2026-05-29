@@ -97,6 +97,7 @@ LABEL_MAP = {
     'SYN':          'SYN Flood',
     # UDP Flood / TFTP
     'UDPLag':       'UDP Flood',
+    'UDP-lag':      'UDP Flood',
     'DrDoS_UDP':    'UDP Flood',
     'UDP':          'UDP Flood',
     'TFTP':         'UDP Flood',
@@ -159,6 +160,9 @@ def _clean_chunk(chunk, cic_cols, label_col):
         if col in chunk.columns:
             chunk[col] = pd.to_numeric(chunk[col], errors='coerce')
 
+    # Remove float inf gerados por pd.to_numeric('Infinity') → float('inf')
+    chunk[cic_cols] = chunk[cic_cols].replace([np.inf, -np.inf], np.nan)
+
     # Remove linhas com NaN em qualquer feature
     chunk.dropna(subset=cic_cols, inplace=True)
 
@@ -176,98 +180,102 @@ def _clean_chunk(chunk, cic_cols, label_col):
     return chunk
 
 
-def _load_single_csv(path, test_mode=False, chunk_size=50_000):
+def _load_single_csv(path, chunk_size=50_000, max_rows=None):
     """
-    Lê um CSV do CIC-DDoS2019 em chunks com as configurações corretas.
-    Retorna DataFrame com features renomeadas + coluna '_label_mapped',
-    ou DataFrame vazio em caso de erro.
+    Lê um CSV do CIC-DDoS2019 em chunks e converte direto para numpy.
+
+    Retorna (X: float32 array, y: str array) ou (None, None) em caso de erro.
+    Converter para numpy por chunk evita acumular DataFrames na memória.
+    max_rows: para de ler após este número de linhas válidas (None = sem limite).
     """
     path = Path(path)
     cic_cols = list(CIC_TO_ABBREV.keys())
-    parts = []
-    max_chunks = 2 if test_mode else None  # ~100 k linhas em test_mode
+    abbrev_cols = list(CIC_TO_ABBREV.values())
+    X_parts = []
+    y_parts = []
+    rows_collected = 0
 
     try:
         reader = pd.read_csv(
             path,
-            sep=None,           # detecção automática de separador
+            sep=None,
             engine='python',
             encoding='cp1252',
             on_bad_lines='skip',
             chunksize=chunk_size,
         )
-        for i, chunk in enumerate(reader):
-            if max_chunks is not None and i >= max_chunks:
+        for chunk in reader:
+            if max_rows is not None and rows_collected >= max_rows:
                 break
 
-            # Strip em nomes de colunas
             chunk.columns = chunk.columns.str.strip()
 
-            # Encontra coluna de label
             label_col = _find_label_col(chunk.columns)
             if label_col is None:
                 continue
 
-            # Mantém apenas features disponíveis + label
-            available = [c for c in cic_cols if c in chunk.columns]
-            if not available:
-                continue
-
-            # Preenche features ausentes com 0
             for col in cic_cols:
                 if col not in chunk.columns:
                     chunk[col] = 0.0
 
             chunk = chunk[cic_cols + [label_col]].copy()
             cleaned = _clean_chunk(chunk, cic_cols, label_col)
-            if cleaned is not None:
-                parts.append(cleaned)
+            del chunk
+            if cleaned is None:
+                continue
+
+            # Trunca se atingiu o limite
+            if max_rows is not None:
+                remaining = max_rows - rows_collected
+                if len(cleaned) > remaining:
+                    cleaned = cleaned.iloc[:remaining]
+
+            # Renomeia e converte para numpy imediatamente — libera o DataFrame
+            cleaned.rename(columns=CIC_TO_ABBREV, inplace=True)
+            X_parts.append(cleaned[abbrev_cols].values.astype(np.float32))
+            y_parts.append(cleaned['_label_mapped'].values)
+            rows_collected += len(cleaned)
+            del cleaned
 
     except Exception as e:
         print(f'  [ERRO ao ler {path.name}] {e}')
-        return pd.DataFrame()
+        return None, None
 
-    if not parts:
-        return pd.DataFrame()
+    if not X_parts:
+        return None, None
 
-    df = pd.concat(parts, ignore_index=True)
-
-    # Renomeia colunas CIC → nomes abreviados compatíveis com a API
-    df.rename(columns=CIC_TO_ABBREV, inplace=True)
-
-    return df
+    return np.concatenate(X_parts), np.concatenate(y_parts)
 
 
 # ─────────────────────────────────────────────────────────────
 #  Função principal: carrega todos os CSVs
 # ─────────────────────────────────────────────────────────────
 
-def load_all_csvs(csv_dir='.', test_mode=False, chunk_size=50_000, output_dir=None):
+def load_all_csvs(csv_dir='.', test_mode=False, chunk_size=50_000,
+                  max_rows_per_file=500_000, output_dir=None):
     """
-    Itera sobre os 11 arquivos do CIC-DDoS2019 em csv_dir,
-    aplica limpeza e mapeamento, concatena e retorna X, y prontos para treino.
-
-    Se output_dir for informado, salva também os artefatos .npy e .pkl.
+    Itera sobre os 11 arquivos do CIC-DDoS2019, lê em chunks e mantém
+    apenas arrays numpy em memória (sem acumular DataFrames).
 
     Parâmetros
     ----------
     csv_dir : str | Path
-        Diretório onde estão os arquivos CSV.
-    test_mode : bool
-        Se True, lê apenas as primeiras ~100 k linhas de cada arquivo.
-    chunk_size : int
-        Número de linhas por chunk (padrão: 50 000).
-    output_dir : str | Path | None
-        Se informado, salva X_preprocessed.npy, y.npy, colunas_modelo.pkl,
-        label_encoder.pkl e preprocessing_metadata.json.
+    test_mode : bool        — se True, limita a 100 k linhas por arquivo
+    chunk_size : int        — linhas por chunk de leitura (padrão: 50 000)
+    max_rows_per_file : int — amostras máximas por arquivo (padrão: 500 000)
+    output_dir : str | Path | None — se informado, salva artefatos para train.py
 
     Retorna
     -------
-    X : np.ndarray  shape (n_amostras, 26)
-    y : np.ndarray  shape (n_amostras,)  — labels em string (antes de encode)
+    X : np.ndarray  shape (n, 26)  float64
+    y : np.ndarray  shape (n,)     str
     """
+    import gc
+
     csv_dir = Path(csv_dir)
-    all_parts = []
+    limit = 100_000 if test_mode else max_rows_per_file
+    X_parts = []
+    y_parts = []
     total_rows = 0
 
     for filename in CSV_FILES:
@@ -276,36 +284,40 @@ def load_all_csvs(csv_dir='.', test_mode=False, chunk_size=50_000, output_dir=No
             print(f'[preprocess] AVISO: {filename} não encontrado em {csv_dir}')
             continue
 
-        print(f'\n[preprocess] ▶ {filename} ...', end=' ', flush=True)
-        df = _load_single_csv(fpath, test_mode=test_mode, chunk_size=chunk_size)
+        print(f'[preprocess] ▶ {filename} ...', end=' ', flush=True)
+        X_file, y_file = _load_single_csv(fpath, chunk_size=chunk_size, max_rows=limit)
 
-        if df.empty:
+        if X_file is None or len(X_file) == 0:
             print('vazio ou sem dados válidos.')
             continue
 
-        n = len(df)
+        n = len(X_file)
         total_rows += n
-        dist = df['_label_mapped'].value_counts().to_dict()
-        dist_str = '  |  '.join(f'{k}: {v:,}' for k, v in sorted(dist.items()))
+        classes, counts = np.unique(y_file, return_counts=True)
+        dist_str = '  |  '.join(f'{c}: {v:,}' for c, v in zip(classes, counts))
         print(f'{n:,} linhas  [{dist_str}]')
 
-        all_parts.append(df)
+        X_parts.append(X_file)
+        y_parts.append(y_file)
+        # Libera referências imediatamente para o GC recuperar memória
+        del X_file, y_file
+        gc.collect()
 
-    if not all_parts:
+    if not X_parts:
         print('\n[preprocess] ERRO: nenhum arquivo carregado.')
         return np.array([]), np.array([])
 
-    print(f'\n[preprocess] Concatenando {len(all_parts)} arquivo(s)...')
-    full = pd.concat(all_parts, ignore_index=True)
+    print(f'\n[preprocess] Juntando {len(X_parts)} arquivo(s)...')
+    X = np.concatenate(X_parts).astype(np.float64)
+    y = np.concatenate(y_parts)
+    del X_parts, y_parts
+    gc.collect()
+
     print(f'[preprocess] Total: {total_rows:,} amostras | {len(COLUNAS_MODELO)} features')
-
-    dist_total = full['_label_mapped'].value_counts()
+    classes, counts = np.unique(y, return_counts=True)
     print('[preprocess] Distribuição final:')
-    for cls, cnt in dist_total.items():
+    for cls, cnt in zip(classes, counts):
         print(f'  {cls:<25} {cnt:>10,}  ({cnt/total_rows*100:.1f}%)')
-
-    X = full[COLUNAS_MODELO].values.astype(np.float64)
-    y = full['_label_mapped'].values
 
     if output_dir is not None:
         _save_artifacts(X, y, output_dir)
@@ -406,7 +418,9 @@ if __name__ == '__main__':
     parser.add_argument('--csv-dir', default=None,
                         help='Diretório com os 11 CSVs do CIC-DDoS2019')
     parser.add_argument('--test-mode', action='store_true',
-                        help='Lê apenas as primeiras ~100k linhas de cada arquivo')
+                        help='Lê apenas as primeiras 100 k linhas de cada arquivo')
+    parser.add_argument('--max-rows', type=int, default=500_000,
+                        help='Máx. de linhas por arquivo no modo completo (padrão: 500 000)')
     parser.add_argument('--chunk-size', type=int, default=50_000,
                         help='Linhas por chunk ao ler (padrão: 50 000)')
 
@@ -428,6 +442,7 @@ if __name__ == '__main__':
             csv_dir=args.csv_dir,
             test_mode=args.test_mode,
             chunk_size=args.chunk_size,
+            max_rows_per_file=args.max_rows,
             output_dir=None if args.test_mode else args.output,
         )
     else:

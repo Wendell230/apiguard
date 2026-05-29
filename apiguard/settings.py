@@ -128,14 +128,14 @@ REST_FRAMEWORK = {
         'rest_framework.filters.SearchFilter',
         'rest_framework.filters.OrderingFilter',
     ],
-    # Rate limiting básico
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
-        'anon': '20/minute',
-        'user': '100/minute',
+        'anon':    '60/minute',
+        'user':    '300/minute',   # rotas gerais
+        'predict': '2000/minute',  # /api/predict/ — suporta import em lote
     },
 }
 
