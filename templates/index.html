@@ -7,6 +7,7 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <style>
     :root {
       --sidebar-bg: #0f172a;
@@ -113,6 +114,24 @@
       box-shadow: var(--card-shadow); border: 1px solid #e2e8f0;
     }
     .chart-card h6 { font-size: .82rem; color: #64748b; text-transform: uppercase; letter-spacing: .5px; }
+
+    /* ── Import batch ── */
+    .predict-tab-btn { border-radius: 8px; font-size: .85rem; }
+    .predict-tab-btn.active { background: var(--sidebar-accent); border-color: var(--sidebar-accent); color: #fff; }
+    .predict-tab-btn:not(.active) { background: transparent; border-color: #cbd5e1; color: #475569; }
+    .predict-tab-btn:not(.active):hover { background: #f1f5f9; }
+    #import-preview-table { max-height: 180px; overflow-y: auto; }
+    #batch-results-table  { max-height: 320px; overflow-y: auto; }
+    .badge-error { background: #f3f4f6; color: #6b7280; border: 1px solid #d1d5db; }
+    .upload-zone {
+      border: 2px dashed #cbd5e1; border-radius: 10px;
+      padding: 28px; text-align: center; cursor: pointer;
+      transition: border-color .15s, background .15s;
+    }
+    .upload-zone:hover, .upload-zone.drag-over {
+      border-color: var(--sidebar-accent); background: #f0f9ff;
+    }
+    .upload-zone input[type=file] { display: none; }
 
     /* ── Misc ── */
     .spinner-border-sm { width: 1rem; height: 1rem; }
@@ -303,6 +322,18 @@
       <div class="page-title"><i class="bi bi-cpu me-2"></i>Analisar Tráfego</div>
       <div class="page-subtitle">Classifique um fluxo de rede com o modelo Random Forest</div>
 
+      <!-- Tabs de modo -->
+      <div class="d-flex gap-2 mb-4">
+        <button class="predict-tab-btn btn btn-sm active" id="ptab-manual" onclick="switchPredictTab('manual')">
+          <i class="bi bi-code-square me-1"></i>Manual / Exemplos
+        </button>
+        <button class="predict-tab-btn btn btn-sm" id="ptab-import" onclick="switchPredictTab('import')">
+          <i class="bi bi-file-earmark-spreadsheet me-1"></i>Importar CSV / Excel
+        </button>
+      </div>
+
+      <!-- ── Tab: Manual ── -->
+      <div id="predict-manual">
       <div class="row g-4">
         <div class="col-lg-6">
           <div class="chart-card">
@@ -407,6 +438,65 @@
           </div>
         </div>
       </div>
+      </div><!-- /predict-manual -->
+
+      <!-- ── Tab: Importar CSV / Excel ── -->
+      <div id="predict-import" style="display:none">
+        <div class="row g-4">
+
+          <!-- Coluna esquerda: upload + preview -->
+          <div class="col-lg-6">
+            <div class="chart-card">
+              <h6 class="mb-3"><i class="bi bi-file-earmark-spreadsheet me-1"></i>Selecionar arquivo</h6>
+
+              <!-- Zona de drop/click -->
+              <div class="upload-zone" id="upload-zone" onclick="document.getElementById('import-file').click()"
+                   ondragover="event.preventDefault();this.classList.add('drag-over')"
+                   ondragleave="this.classList.remove('drag-over')"
+                   ondrop="handleFileDrop(event)">
+                <input type="file" id="import-file" accept=".csv,.xlsx,.xls" onchange="handleFileImport(event)" />
+                <i class="bi bi-cloud-upload text-info" style="font-size:2rem;opacity:.6"></i>
+                <p class="mb-1 mt-2 fw-semibold text-secondary">Clique ou arraste o arquivo aqui</p>
+                <small class="text-muted">Formatos suportados: <strong>.csv</strong>, <strong>.xlsx</strong>, <strong>.xls</strong></small>
+              </div>
+
+              <!-- Info + preview tabela -->
+              <div id="import-preview">
+                <div class="text-muted text-center py-3 small">
+                  <i class="bi bi-info-circle me-1"></i>O arquivo deve ter as colunas de features do dataset 5G DoS/DDoS.<br>
+                  Colunas <code>source_ip</code>, <code>protocol</code> e <code>packet_count</code> são opcionais.
+                </div>
+              </div>
+
+              <!-- Botão analisar -->
+              <button class="btn btn-primary w-100 mt-3 fw-semibold" id="import-analyze-btn"
+                      onclick="runBatchPredict()" disabled>
+                <i class="bi bi-play-fill me-1"></i>Analisar Arquivo
+              </button>
+
+              <!-- Progresso -->
+              <div id="import-progress" style="display:none" class="mt-3">
+                <div class="progress" style="height:6px;border-radius:4px">
+                  <div id="import-progress-bar" class="progress-bar bg-info" style="width:0%;transition:width .2s"></div>
+                </div>
+                <small class="text-muted d-block text-center mt-1" id="import-progress-text"></small>
+              </div>
+            </div>
+          </div>
+
+          <!-- Coluna direita: resultados em lote -->
+          <div class="col-lg-6">
+            <div id="batch-results" style="display:none"></div>
+
+            <div id="import-empty" class="chart-card text-center py-5 text-muted">
+              <i class="bi bi-file-earmark-spreadsheet" style="font-size:3rem;opacity:.2"></i>
+              <p class="mt-3 mb-0">Importe um arquivo para analisar múltiplos fluxos em lote</p>
+            </div>
+          </div>
+
+        </div>
+      </div><!-- /predict-import -->
+
     </section>
 
     <!-- ── LOGS ── -->
@@ -1062,6 +1152,203 @@ function toast(msg, type = 'info') {
   if (type === 'success') el.style.borderLeft = '4px solid #22c55e';
   container.appendChild(el);
   setTimeout(() => el.remove(), 3500);
+}
+
+// ════════════════════════════════════════
+//  Importar CSV / Excel (Batch Predict)
+// ════════════════════════════════════════
+let importedRows = [];
+
+function switchPredictTab(tab) {
+  const isImport = tab === 'import';
+  document.getElementById('predict-manual').style.display = isImport ? 'none' : 'block';
+  document.getElementById('predict-import').style.display = isImport ? 'block' : 'none';
+  document.getElementById('ptab-manual').classList.toggle('active', !isImport);
+  document.getElementById('ptab-import').classList.toggle('active', isImport);
+}
+
+function handleFileDrop(event) {
+  event.preventDefault();
+  document.getElementById('upload-zone').classList.remove('drag-over');
+  const file = event.dataTransfer.files[0];
+  if (file) processImportFile(file);
+}
+
+function handleFileImport(event) {
+  const file = event.target.files[0];
+  if (file) processImportFile(file);
+}
+
+function processImportFile(file) {
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const data = new Uint8Array(e.target.result);
+      const wb = XLSX.read(data, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: 0 });
+      if (!rows.length) { toast('Arquivo vazio ou sem dados válidos.', 'danger'); return; }
+      importedRows = rows;
+      renderImportPreview(rows, file.name);
+    } catch (err) {
+      toast('Erro ao ler arquivo: ' + err.message, 'danger');
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function renderImportPreview(rows, filename) {
+  const cols = Object.keys(rows[0]);
+  const shown = cols.slice(0, 6);
+  const hasMore = cols.length > 6;
+
+  document.getElementById('import-preview').innerHTML = `
+    <div class="alert alert-info py-2 small mt-3 mb-2">
+      <i class="bi bi-file-check me-1"></i>
+      <strong>${filename}</strong> — <strong>${rows.length}</strong> registros · ${cols.length} colunas
+    </div>
+    <p class="small text-muted mb-1">Prévia (primeiras 5 linhas):</p>
+    <div id="import-preview-table">
+      <table class="table table-sm table-bordered small mb-0">
+        <thead class="table-light">
+          <tr>${shown.map(c => `<th class="text-truncate" style="max-width:90px" title="${c}">${c}</th>`).join('')}
+              ${hasMore ? `<th class="text-muted">+${cols.length - 6} mais</th>` : ''}</tr>
+        </thead>
+        <tbody>
+          ${rows.slice(0, 5).map(r => `<tr>
+            ${shown.map(c => `<td class="text-truncate" style="max-width:90px">${r[c] ?? ''}</td>`).join('')}
+            ${hasMore ? '<td class="text-muted">…</td>' : ''}
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+
+  document.getElementById('import-analyze-btn').disabled = false;
+  document.getElementById('batch-results').style.display = 'none';
+  document.getElementById('import-empty').style.display = 'none';
+  document.getElementById('import-progress').style.display = 'none';
+  document.getElementById('import-progress-bar').style.width = '0%';
+}
+
+async function runBatchPredict() {
+  if (!importedRows.length) return;
+
+  const META = ['source_ip', 'protocol', 'packet_count', 'duration'];
+  const btn = document.getElementById('import-analyze-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Analisando...';
+
+  const progEl  = document.getElementById('import-progress');
+  const progBar = document.getElementById('import-progress-bar');
+  const progTxt = document.getElementById('import-progress-text');
+  progEl.style.display = 'block';
+
+  const results = [];
+  const total = importedRows.length;
+
+  for (let i = 0; i < total; i++) {
+    const row = importedRows[i];
+    const payload = {};
+    for (const [k, v] of Object.entries(row)) payload[k] = v;
+
+    progBar.style.width = Math.round((i / total) * 100) + '%';
+    progTxt.textContent = `Analisando ${i + 1} de ${total}…`;
+
+    try {
+      const res = await apiFetch('/api/predict/', { method: 'POST', body: JSON.stringify(payload) });
+      if (res && res.ok) {
+        const d = await res.json();
+        results.push({
+          row: i + 1,
+          source_ip:   row.source_ip   || '—',
+          protocol:    row.protocol    || '—',
+          prediction:  d.prediction,
+          attack_type: d.attack_type,
+          probability: d.probability,
+          log_id:      d.log_id,
+        });
+      } else {
+        results.push({ row: i + 1, source_ip: row.source_ip || '—', protocol: row.protocol || '—',
+          prediction: 'ERRO', attack_type: '—', probability: null });
+      }
+    } catch {
+      results.push({ row: i + 1, source_ip: row.source_ip || '—', protocol: row.protocol || '—',
+        prediction: 'ERRO', attack_type: '—', probability: null });
+    }
+  }
+
+  progBar.style.width = '100%';
+  progTxt.textContent = `Concluído — ${total} fluxo${total !== 1 ? 's' : ''} analisado${total !== 1 ? 's' : ''}.`;
+
+  btn.disabled = false;
+  btn.innerHTML = '<i class="bi bi-play-fill me-1"></i>Analisar Arquivo';
+
+  renderBatchResults(results);
+}
+
+function renderBatchResults(results) {
+  const attacks = results.filter(r => r.prediction === 'ATTACK').length;
+  const benign  = results.filter(r => r.prediction === 'BENIGN').length;
+  const errors  = results.filter(r => r.prediction === 'ERRO').length;
+
+  const rows = results.map(r => {
+    const badge = r.prediction === 'ATTACK'
+      ? '<span class="badge badge-attack">Ataque</span>'
+      : r.prediction === 'BENIGN'
+      ? '<span class="badge badge-benign">Benigno</span>'
+      : '<span class="badge badge-error">Erro</span>';
+    return `<tr>
+      <td class="text-muted">${r.row}</td>
+      <td>${r.source_ip}</td>
+      <td>${r.protocol}</td>
+      <td>${badge}</td>
+      <td>${r.attack_type || '—'}</td>
+      <td class="text-end">${r.probability !== null ? (r.probability * 100).toFixed(1) + '%' : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  const el = document.getElementById('batch-results');
+  el.style.display = 'block';
+  el.innerHTML = `
+    <div class="chart-card">
+      <h6 class="mb-3"><i class="bi bi-bar-chart me-1"></i>Resultado em lote</h6>
+      <div class="row text-center g-2 mb-3">
+        <div class="col-4">
+          <div class="metric-card benign py-2 px-3">
+            <div class="value text-success" style="font-size:1.6rem">${benign}</div>
+            <div class="label">Benignos</div>
+          </div>
+        </div>
+        <div class="col-4">
+          <div class="metric-card attack py-2 px-3">
+            <div class="value text-danger" style="font-size:1.6rem">${attacks}</div>
+            <div class="label">Ataques</div>
+          </div>
+        </div>
+        <div class="col-4">
+          <div class="metric-card py-2 px-3">
+            <div class="value" style="font-size:1.6rem">${results.length}</div>
+            <div class="label">Total</div>
+          </div>
+        </div>
+      </div>
+      ${errors ? `<div class="alert alert-warning py-2 small mb-2"><i class="bi bi-exclamation-triangle me-1"></i>${errors} linha(s) com erro de processamento.</div>` : ''}
+      <div id="batch-results-table">
+        <table class="table table-sm table-hover align-middle mb-0 small">
+          <thead class="table-light" style="position:sticky;top:0">
+            <tr>
+              <th>#</th>
+              <th>IP Origem</th>
+              <th>Protocolo</th>
+              <th>Predição</th>
+              <th>Tipo de Ataque</th>
+              <th class="text-end">Confiança</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
 }
 
 // ════════════════════════════════════════
