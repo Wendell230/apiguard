@@ -460,11 +460,19 @@
                 <small class="text-muted">Formatos suportados: <strong>.csv</strong>, <strong>.xlsx</strong>, <strong>.xls</strong></small>
               </div>
 
+              <!-- Limite de linhas -->
+              <div class="d-flex align-items-center gap-2 mt-3">
+                <label class="form-label small mb-0 text-nowrap">Amostrar até</label>
+                <input type="number" class="form-control form-control-sm" id="import-limit"
+                       value="100" min="1" max="2000" style="width:90px" />
+                <span class="small text-muted">linhas do arquivo</span>
+              </div>
+
               <!-- Info + preview tabela -->
               <div id="import-preview">
                 <div class="text-muted text-center py-3 small">
-                  <i class="bi bi-info-circle me-1"></i>O arquivo deve ter as colunas de features do dataset 5G DoS/DDoS.<br>
-                  Colunas <code>source_ip</code>, <code>protocol</code> e <code>packet_count</code> são opcionais.
+                  <i class="bi bi-info-circle me-1"></i>Suporta colunas do dataset original (<code>Flow Duration</code>, <code>Total Fwd Packets</code>…)
+                  e nomes em snake_case (<code>flow_duration</code>, <code>tot_fwd_pkts</code>…).
                 </div>
               </div>
 
@@ -1157,6 +1165,108 @@ function toast(msg, type = 'info') {
 // ════════════════════════════════════════
 //  Importar CSV / Excel (Batch Predict)
 // ════════════════════════════════════════
+
+// Mapeamento: nome da coluna do CSV (minúsculo, sem espaço extra) → campo snake_case da API
+const CSV_COL_MAP = {
+  // snake_case já pronto → passa direto
+  'flow_duration':'flow_duration','tot_fwd_pkts':'tot_fwd_pkts','tot_bwd_pkts':'tot_bwd_pkts',
+  'totlen_fwd_pkts':'totlen_fwd_pkts','totlen_bwd_pkts':'totlen_bwd_pkts',
+  'fwd_pkt_len_max':'fwd_pkt_len_max','fwd_pkt_len_min':'fwd_pkt_len_min',
+  'fwd_pkt_len_mean':'fwd_pkt_len_mean','fwd_pkt_len_std':'fwd_pkt_len_std',
+  'bwd_pkt_len_max':'bwd_pkt_len_max','bwd_pkt_len_min':'bwd_pkt_len_min',
+  'bwd_pkt_len_mean':'bwd_pkt_len_mean','bwd_pkt_len_std':'bwd_pkt_len_std',
+  'flow_byts_s':'flow_byts_s','flow_pkts_s':'flow_pkts_s',
+  'flow_iat_mean':'flow_iat_mean','flow_iat_std':'flow_iat_std',
+  'flow_iat_max':'flow_iat_max','flow_iat_min':'flow_iat_min',
+  'fwd_iat_tot':'fwd_iat_tot','fwd_iat_mean':'fwd_iat_mean','fwd_iat_std':'fwd_iat_std',
+  'fwd_iat_max':'fwd_iat_max','fwd_iat_min':'fwd_iat_min',
+  'bwd_iat_tot':'bwd_iat_tot','bwd_iat_mean':'bwd_iat_mean','bwd_iat_std':'bwd_iat_std',
+  'bwd_iat_max':'bwd_iat_max','bwd_iat_min':'bwd_iat_min',
+  'fwd_psh_flags':'fwd_psh_flags','bwd_psh_flags':'bwd_psh_flags',
+  'fwd_urg_flags':'fwd_urg_flags','bwd_urg_flags':'bwd_urg_flags',
+  'fwd_header_len':'fwd_header_len','bwd_header_len':'bwd_header_len',
+  'fwd_pkts_s':'fwd_pkts_s','bwd_pkts_s':'bwd_pkts_s',
+  'pkt_len_min':'pkt_len_min','pkt_len_max':'pkt_len_max',
+  'pkt_len_mean':'pkt_len_mean','pkt_len_std':'pkt_len_std','pkt_len_var':'pkt_len_var',
+  'fin_flag_cnt':'fin_flag_cnt','syn_flag_cnt':'syn_flag_cnt','rst_flag_cnt':'rst_flag_cnt',
+  'psh_flag_cnt':'psh_flag_cnt','ack_flag_cnt':'ack_flag_cnt','urg_flag_cnt':'urg_flag_cnt',
+  'cwe_flag_count':'cwe_flag_count','ece_flag_cnt':'ece_flag_cnt',
+  'down_up_ratio':'down_up_ratio','pkt_size_avg':'pkt_size_avg',
+  'fwd_seg_size_avg':'fwd_seg_size_avg','bwd_seg_size_avg':'bwd_seg_size_avg',
+  'fwd_byts_b_avg':'fwd_byts_b_avg','fwd_pkts_b_avg':'fwd_pkts_b_avg','fwd_blk_rate_avg':'fwd_blk_rate_avg',
+  'bwd_byts_b_avg':'bwd_byts_b_avg','bwd_pkts_b_avg':'bwd_pkts_b_avg','bwd_blk_rate_avg':'bwd_blk_rate_avg',
+  'subflow_fwd_pkts':'subflow_fwd_pkts','subflow_fwd_byts':'subflow_fwd_byts',
+  'subflow_bwd_pkts':'subflow_bwd_pkts','subflow_bwd_byts':'subflow_bwd_byts',
+  'init_fwd_win_byts':'init_fwd_win_byts','init_bwd_win_byts':'init_bwd_win_byts',
+  'fwd_act_data_pkts':'fwd_act_data_pkts','fwd_seg_size_min':'fwd_seg_size_min',
+  'active_mean':'active_mean','active_std':'active_std','active_max':'active_max','active_min':'active_min',
+  'idle_mean':'idle_mean','idle_std':'idle_std','idle_max':'idle_max','idle_min':'idle_min',
+  'source_ip':'source_ip','protocol':'protocol','packet_count':'packet_count','duration':'duration',
+  // Nomes originais do dataset (human-readable)
+  'flow duration':'flow_duration',
+  'total fwd packets':'tot_fwd_pkts','tot fwd pkts':'tot_fwd_pkts',
+  'total backward packets':'tot_bwd_pkts','tot bwd pkts':'tot_bwd_pkts',
+  'total length of fwd packets':'totlen_fwd_pkts','totlen fwd pkts':'totlen_fwd_pkts',
+  'total length of bwd packets':'totlen_bwd_pkts','totlen bwd pkts':'totlen_bwd_pkts',
+  'fwd packet length max':'fwd_pkt_len_max','fwd pkt len max':'fwd_pkt_len_max',
+  'fwd packet length min':'fwd_pkt_len_min','fwd pkt len min':'fwd_pkt_len_min',
+  'fwd packet length mean':'fwd_pkt_len_mean','fwd pkt len mean':'fwd_pkt_len_mean',
+  'fwd packet length std':'fwd_pkt_len_std','fwd pkt len std':'fwd_pkt_len_std',
+  'bwd packet length max':'bwd_pkt_len_max','bwd pkt len max':'bwd_pkt_len_max',
+  'bwd packet length min':'bwd_pkt_len_min','bwd pkt len min':'bwd_pkt_len_min',
+  'bwd packet length mean':'bwd_pkt_len_mean','bwd pkt len mean':'bwd_pkt_len_mean',
+  'bwd packet length std':'bwd_pkt_len_std','bwd pkt len std':'bwd_pkt_len_std',
+  'flow bytes/s':'flow_byts_s','flow byts/s':'flow_byts_s',
+  'flow packets/s':'flow_pkts_s','flow pkts/s':'flow_pkts_s',
+  'flow iat mean':'flow_iat_mean','flow iat std':'flow_iat_std',
+  'flow iat max':'flow_iat_max','flow iat min':'flow_iat_min',
+  'fwd iat total':'fwd_iat_tot','fwd iat tot':'fwd_iat_tot',
+  'fwd iat mean':'fwd_iat_mean','fwd iat std':'fwd_iat_std',
+  'fwd iat max':'fwd_iat_max','fwd iat min':'fwd_iat_min',
+  'bwd iat total':'bwd_iat_tot','bwd iat tot':'bwd_iat_tot',
+  'bwd iat mean':'bwd_iat_mean','bwd iat std':'bwd_iat_std',
+  'bwd iat max':'bwd_iat_max','bwd iat min':'bwd_iat_min',
+  'fwd psh flags':'fwd_psh_flags','bwd psh flags':'bwd_psh_flags',
+  'fwd urg flags':'fwd_urg_flags','bwd urg flags':'bwd_urg_flags',
+  'fwd header length':'fwd_header_len','fwd header len':'fwd_header_len',
+  'bwd header length':'bwd_header_len','bwd header len':'bwd_header_len',
+  'fwd packets/s':'fwd_pkts_s','fwd pkts/s':'fwd_pkts_s',
+  'bwd packets/s':'bwd_pkts_s','bwd pkts/s':'bwd_pkts_s',
+  'min packet length':'pkt_len_min','pkt len min':'pkt_len_min',
+  'max packet length':'pkt_len_max','pkt len max':'pkt_len_max',
+  'packet length mean':'pkt_len_mean','pkt len mean':'pkt_len_mean',
+  'packet length std':'pkt_len_std','pkt len std':'pkt_len_std',
+  'packet length variance':'pkt_len_var','pkt len var':'pkt_len_var',
+  'fin flag count':'fin_flag_cnt','fin flag cnt':'fin_flag_cnt',
+  'syn flag count':'syn_flag_cnt','syn flag cnt':'syn_flag_cnt',
+  'rst flag count':'rst_flag_cnt','rst flag cnt':'rst_flag_cnt',
+  'psh flag count':'psh_flag_cnt','psh flag cnt':'psh_flag_cnt',
+  'ack flag count':'ack_flag_cnt','ack flag cnt':'ack_flag_cnt',
+  'urg flag count':'urg_flag_cnt','urg flag cnt':'urg_flag_cnt',
+  'cwe flag count':'cwe_flag_count','ece flag count':'ece_flag_cnt','ece flag cnt':'ece_flag_cnt',
+  'down/up ratio':'down_up_ratio',
+  'average packet size':'pkt_size_avg','pkt size avg':'pkt_size_avg',
+  'avg fwd segment size':'fwd_seg_size_avg','fwd seg size avg':'fwd_seg_size_avg',
+  'avg bwd segment size':'bwd_seg_size_avg','bwd seg size avg':'bwd_seg_size_avg',
+  'fwd avg bytes/bulk':'fwd_byts_b_avg','fwd byts/b avg':'fwd_byts_b_avg',
+  'fwd avg packets/bulk':'fwd_pkts_b_avg','fwd pkts/b avg':'fwd_pkts_b_avg',
+  'fwd avg bulk rate':'fwd_blk_rate_avg','fwd blk rate avg':'fwd_blk_rate_avg',
+  'bwd avg bytes/bulk':'bwd_byts_b_avg','bwd byts/b avg':'bwd_byts_b_avg',
+  'bwd avg packets/bulk':'bwd_pkts_b_avg','bwd pkts/b avg':'bwd_pkts_b_avg',
+  'bwd avg bulk rate':'bwd_blk_rate_avg','bwd blk rate avg':'bwd_blk_rate_avg',
+  'subflow fwd packets':'subflow_fwd_pkts','subflow fwd pkts':'subflow_fwd_pkts',
+  'subflow fwd bytes':'subflow_fwd_byts','subflow fwd byts':'subflow_fwd_byts',
+  'subflow bwd packets':'subflow_bwd_pkts','subflow bwd pkts':'subflow_bwd_pkts',
+  'subflow bwd bytes':'subflow_bwd_byts','subflow bwd byts':'subflow_bwd_byts',
+  'init_win_bytes_forward':'init_fwd_win_byts','init fwd win byts':'init_fwd_win_byts',
+  'init_win_bytes_backward':'init_bwd_win_byts','init bwd win byts':'init_bwd_win_byts',
+  'act_data_pkt_fwd':'fwd_act_data_pkts','fwd act data pkts':'fwd_act_data_pkts',
+  'min_seg_size_forward':'fwd_seg_size_min','fwd seg size min':'fwd_seg_size_min',
+  'active mean':'active_mean','active std':'active_std','active max':'active_max','active min':'active_min',
+  'idle mean':'idle_mean','idle std':'idle_std','idle max':'idle_max','idle min':'idle_min',
+  'source ip':'source_ip','source_ip':'source_ip',
+};
+
 let importedRows = [];
 
 function switchPredictTab(tab) {
@@ -1179,44 +1289,98 @@ function handleFileImport(event) {
   if (file) processImportFile(file);
 }
 
-function processImportFile(file) {
-  const reader = new FileReader();
-  reader.onload = function(e) {
-    try {
-      const data = new Uint8Array(e.target.result);
-      const wb = XLSX.read(data, { type: 'array' });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: 0 });
-      if (!rows.length) { toast('Arquivo vazio ou sem dados válidos.', 'danger'); return; }
-      importedRows = rows;
-      renderImportPreview(rows, file.name);
-    } catch (err) {
-      toast('Erro ao ler arquivo: ' + err.message, 'danger');
-    }
-  };
-  reader.readAsArrayBuffer(file);
+// Converte uma linha CSV em array de valores (trata campos entre aspas)
+function parseCSVLine(line) {
+  const result = [];
+  let cur = '', inQuote = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') { inQuote = !inQuote; }
+    else if (c === ',' && !inQuote) { result.push(cur); cur = ''; }
+    else { cur += c; }
+  }
+  result.push(cur);
+  return result;
 }
 
-function renderImportPreview(rows, filename) {
+// Mapeia uma linha (obj com nomes originais) para nomes snake_case da API
+function normalizeRow(rawRow) {
+  const out = {};
+  for (const [rawKey, val] of Object.entries(rawRow)) {
+    const key = CSV_COL_MAP[rawKey.trim().toLowerCase()];
+    if (key) out[key] = isNaN(val) || val === '' ? val : Number(val);
+  }
+  return out;
+}
+
+function processImportFile(file) {
+  const limit = parseInt(document.getElementById('import-limit').value) || 100;
+  const isExcel = /\.(xlsx|xls)$/i.test(file.name);
+
+  if (isExcel) {
+    // Excel: usa SheetJS limitando linhas no parse
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      try {
+        const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array', sheetRows: limit + 1 });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const raw = XLSX.utils.sheet_to_json(ws, { defval: '' });
+        if (!raw.length) { toast('Planilha vazia ou sem dados.', 'danger'); return; }
+        importedRows = raw.map(normalizeRow);
+        renderImportPreview(importedRows, file.name, raw.length);
+      } catch (err) {
+        toast('Erro ao ler Excel: ' + err.message, 'danger');
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  } else {
+    // CSV: lê como texto e parseia manualmente — muito mais rápido para arquivos grandes
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      try {
+        const lines = e.target.result.split('\n');
+        const headers = parseCSVLine(lines[0]);
+        const rows = [];
+        for (let i = 1; i <= limit && i < lines.length; i++) {
+          const line = lines[i];
+          if (!line.trim()) continue;
+          const vals = parseCSVLine(line);
+          const raw = {};
+          headers.forEach((h, j) => { raw[h] = vals[j] ?? ''; });
+          rows.push(normalizeRow(raw));
+        }
+        if (!rows.length) { toast('Nenhum dado encontrado no CSV.', 'danger'); return; }
+        importedRows = rows;
+        renderImportPreview(importedRows, file.name, lines.length - 1);
+      } catch (err) {
+        toast('Erro ao ler CSV: ' + err.message, 'danger');
+      }
+    };
+    reader.readAsText(file);
+  }
+}
+
+function renderImportPreview(rows, filename, totalInFile) {
   const cols = Object.keys(rows[0]);
-  const shown = cols.slice(0, 6);
-  const hasMore = cols.length > 6;
+  const shown = cols.slice(0, 5);
+  const hasMore = cols.length > 5;
+  const extra = totalInFile > rows.length
+    ? ` <span class="text-warning">(arquivo tem ~${totalInFile.toLocaleString('pt-BR')} — amostrados ${rows.length})</span>` : '';
 
   document.getElementById('import-preview').innerHTML = `
     <div class="alert alert-info py-2 small mt-3 mb-2">
       <i class="bi bi-file-check me-1"></i>
-      <strong>${filename}</strong> — <strong>${rows.length}</strong> registros · ${cols.length} colunas
+      <strong>${filename}</strong> — <strong>${rows.length}</strong> registros carregados${extra} · ${cols.length} features mapeadas
     </div>
-    <p class="small text-muted mb-1">Prévia (primeiras 5 linhas):</p>
+    <p class="small text-muted mb-1">Prévia (primeiras 5 linhas — nomes já normalizados):</p>
     <div id="import-preview-table">
       <table class="table table-sm table-bordered small mb-0">
         <thead class="table-light">
-          <tr>${shown.map(c => `<th class="text-truncate" style="max-width:90px" title="${c}">${c}</th>`).join('')}
-              ${hasMore ? `<th class="text-muted">+${cols.length - 6} mais</th>` : ''}</tr>
+          <tr>${shown.map(c => `<th title="${c}">${c}</th>`).join('')}${hasMore ? `<th class="text-muted">+${cols.length-5} mais</th>` : ''}</tr>
         </thead>
         <tbody>
           ${rows.slice(0, 5).map(r => `<tr>
-            ${shown.map(c => `<td class="text-truncate" style="max-width:90px">${r[c] ?? ''}</td>`).join('')}
+            ${shown.map(c => `<td class="text-truncate" style="max-width:100px">${r[c] ?? ''}</td>`).join('')}
             ${hasMore ? '<td class="text-muted">…</td>' : ''}
           </tr>`).join('')}
         </tbody>
@@ -1233,7 +1397,6 @@ function renderImportPreview(rows, filename) {
 async function runBatchPredict() {
   if (!importedRows.length) return;
 
-  const META = ['source_ip', 'protocol', 'packet_count', 'duration'];
   const btn = document.getElementById('import-analyze-btn');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Analisando...';
@@ -1248,38 +1411,33 @@ async function runBatchPredict() {
 
   for (let i = 0; i < total; i++) {
     const row = importedRows[i];
-    const payload = {};
-    for (const [k, v] of Object.entries(row)) payload[k] = v;
-
     progBar.style.width = Math.round((i / total) * 100) + '%';
     progTxt.textContent = `Analisando ${i + 1} de ${total}…`;
 
     try {
-      const res = await apiFetch('/api/predict/', { method: 'POST', body: JSON.stringify(payload) });
+      const res = await apiFetch('/api/predict/', { method: 'POST', body: JSON.stringify(row) });
       if (res && res.ok) {
         const d = await res.json();
         results.push({
           row: i + 1,
-          source_ip:   row.source_ip   || '—',
-          protocol:    row.protocol    || '—',
+          source_ip:   row.source_ip  || '—',
+          protocol:    row.protocol   || '—',
           prediction:  d.prediction,
           attack_type: d.attack_type,
           probability: d.probability,
-          log_id:      d.log_id,
         });
       } else {
-        results.push({ row: i + 1, source_ip: row.source_ip || '—', protocol: row.protocol || '—',
-          prediction: 'ERRO', attack_type: '—', probability: null });
+        results.push({ row: i+1, source_ip: row.source_ip||'—', protocol: row.protocol||'—',
+          prediction:'ERRO', attack_type:'—', probability: null });
       }
     } catch {
-      results.push({ row: i + 1, source_ip: row.source_ip || '—', protocol: row.protocol || '—',
-        prediction: 'ERRO', attack_type: '—', probability: null });
+      results.push({ row: i+1, source_ip: row.source_ip||'—', protocol: row.protocol||'—',
+        prediction:'ERRO', attack_type:'—', probability: null });
     }
   }
 
   progBar.style.width = '100%';
   progTxt.textContent = `Concluído — ${total} fluxo${total !== 1 ? 's' : ''} analisado${total !== 1 ? 's' : ''}.`;
-
   btn.disabled = false;
   btn.innerHTML = '<i class="bi bi-play-fill me-1"></i>Analisar Arquivo';
 
@@ -1303,7 +1461,7 @@ function renderBatchResults(results) {
       <td>${r.protocol}</td>
       <td>${badge}</td>
       <td>${r.attack_type || '—'}</td>
-      <td class="text-end">${r.probability !== null ? (r.probability * 100).toFixed(1) + '%' : '—'}</td>
+      <td class="text-end">${r.probability !== null ? (r.probability*100).toFixed(1)+'%' : '—'}</td>
     </tr>`;
   }).join('');
 
@@ -1337,11 +1495,8 @@ function renderBatchResults(results) {
         <table class="table table-sm table-hover align-middle mb-0 small">
           <thead class="table-light" style="position:sticky;top:0">
             <tr>
-              <th>#</th>
-              <th>IP Origem</th>
-              <th>Protocolo</th>
-              <th>Predição</th>
-              <th>Tipo de Ataque</th>
+              <th>#</th><th>IP Origem</th><th>Protocolo</th>
+              <th>Predição</th><th>Tipo de Ataque</th>
               <th class="text-end">Confiança</th>
             </tr>
           </thead>
