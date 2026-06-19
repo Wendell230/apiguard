@@ -103,27 +103,23 @@ class DashboardView(APIView):
     permission_classes = (IsAuthenticated,)
 
     def get(self, request):
-        today = timezone.now().date()
-        yesterday = today - timedelta(days=1)
-        last_7d = today - timedelta(days=7)
+        now = timezone.now()
+        last_24h = now - timedelta(hours=24)
+        last_7d  = now - timedelta(days=7)
 
-        total_today = TrafficLog.objects.filter(timestamp__date=today).count()
-        attacks_today = TrafficLog.objects.filter(
-            timestamp__date=today, prediction='ATTACK'
-        ).count()
-        benign_today = total_today - attacks_today
+        total_today   = TrafficLog.objects.filter(timestamp__gte=last_24h).count()
+        attacks_today = TrafficLog.objects.filter(timestamp__gte=last_24h, prediction='ATTACK').count()
+        benign_today  = total_today - attacks_today
 
-        # Percentual benigno hoje
         pct_benign = round((benign_today / total_today * 100), 1) if total_today else 0
 
-        # Latência média (últimas 24h)
         avg_latency = TrafficLog.objects.filter(
-            timestamp__date__gte=yesterday
+            timestamp__gte=last_24h
         ).aggregate(avg=Avg('response_time_ms'))['avg']
 
         # Top tipos de ataque (últimos 7 dias)
         top_attacks = (
-            TrafficLog.objects.filter(timestamp__date__gte=last_7d, prediction='ATTACK')
+            TrafficLog.objects.filter(timestamp__gte=last_7d, prediction='ATTACK')
             .values('attack_type')
             .annotate(count=Count('id'))
             .order_by('-count')[:5]
