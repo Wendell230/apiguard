@@ -17,4 +17,27 @@ else:
     print('Admin ja existe.')
 "
 
+python manage.py shell -c "
+from pathlib import Path
+from detection.models import MLModel
+from django.conf import settings
+
+if not MLModel.objects.filter(is_active=True).exists():
+    model_path = Path(settings.ML_MODELS_DIR) / 'modelo_rf_otimizado.pkl'
+    if model_path.exists():
+        MLModel.objects.create(
+            name='Random Forest CIC-DDoS2019',
+            version='1.0',
+            file_path=str(model_path),
+            accuracy=0.8505,
+            is_active=True,
+            description='Treinado com 26 features do CIC-DDoS2019. Acuracia 0.8505 | F1: 0.8561',
+        )
+        print('Modelo RF registrado no banco.')
+    else:
+        print('AVISO: modelo_rf_otimizado.pkl nao encontrado.')
+else:
+    print('Modelo ativo ja registrado.')
+"
+
 exec gunicorn apiguard.wsgi --bind 0.0.0.0:$PORT --workers 2 --timeout 120
