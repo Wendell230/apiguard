@@ -983,6 +983,7 @@ async function runPredict() {
   const d = await res.json();
 
   showPredictResult(d);
+  loadDashboard();
 }
 
 function showPredictResult(d) {
@@ -1442,6 +1443,7 @@ async function runBatchPredict() {
   btn.innerHTML = '<i class="bi bi-play-fill me-1"></i>Analisar Arquivo';
 
   renderBatchResults(results);
+  loadDashboard();
 }
 
 function renderBatchResults(results) {
